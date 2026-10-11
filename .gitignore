@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+.env
+data/
+.DS_Store
+.idea/
+.env.*
+!.env.example
+Test PDFs Translation Studio/
+fonts/*.zip
