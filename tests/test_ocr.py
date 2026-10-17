@@ -38,9 +38,10 @@ def mixed_pdf():
         return pdf.tobytes()
 
 
-def test_mixed_pdf_ocr_translation(tmp_path):
+@pytest.mark.parametrize('cache_enabled',[False,True])
+def test_mixed_pdf_ocr_translation(tmp_path,cache_enabled):
     ocr = FakeOCR()
-    app = create_app(Settings(studio_data_dir=tmp_path,studio_ocr_dpi=72,studio_font_dir=None),FakeProvider(),ocr_provider=ocr)
+    app = create_app(Settings(studio_data_dir=tmp_path,studio_ocr_dpi=72,studio_font_dir=None,studio_cache_enabled=cache_enabled),FakeProvider(),ocr_provider=ocr)
     with TestClient(app) as client:
         upload = client.post("/v1/documents",files={"file":("mixed.pdf",mixed_pdf())})
         doc = upload.json()["document_id"]
@@ -59,7 +60,7 @@ def test_mixed_pdf_ocr_translation(tmp_path):
         with fitz.open(stream=client.get(f"/v1/documents/{doc}/artifacts/final.pdf").content,filetype="pdf") as pdf:
             assert "Welcome digital" in " ".join(pdf[0].get_text().split())
             assert "Welcome scan" in " ".join(pdf[1].get_text().split())
-        # Persisted OCR response is reused on a restarted inspection job.
+        # Only the explicit cache opt-in may reuse a previous OCR response.
         from app.models import Job
         with app.state.sessions() as session:
             job = Job(document_id=doc,operation="inspect")
@@ -73,7 +74,8 @@ def test_mixed_pdf_ocr_translation(tmp_path):
                 break
             time.sleep(.05)
         assert result["status"] == "completed_with_issues"
-        assert ocr.calls == 1
+        assert ocr.calls == (1 if cache_enabled else 2)
+        assert bool(list((tmp_path/doc).glob('ocr-*.json'))) == cache_enabled
 
 
 async def test_ocr_transport_and_retry():

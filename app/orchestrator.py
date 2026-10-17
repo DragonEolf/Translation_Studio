@@ -5,7 +5,7 @@ from app.models import Document, Page, Block, Translation, LayoutResult, Issue, 
 from app.agents.inspector import InspectorAgent
 from app.agents.text_reader import TextReaderAgent
 from app.agents.block_maker import BlockMakerAgent
-from app.agents.translator import TranslatorAgent, source_hash
+from app.agents.translator import TranslatorAgent, source_hash, literal_only
 from app.agents.reorganiser import ReorganiserAgent
 from app.agents.checker import CheckerAgent
 from app.services.renderer import Renderer
@@ -49,13 +49,14 @@ class Orchestrator:
                         reader = OCRReaderAgent()
                         png, width, height = await asyncio.to_thread(reader.image, source, number, self.settings.studio_ocr_dpi)
                         cache = self.storage.path(document.id,f"ocr-{number}-{self.settings.studio_ocr_dpi}.json")
-                        if cache.exists():
+                        if self.settings.studio_cache_enabled and cache.exists():
                             import json
                             response = json.loads(cache.read_text(encoding="utf-8"))
                         else:
                             response = await self.ocr_provider.extract(png)
                             reader.blocks(document.id,number,item,response,width,height)
-                            self.storage.write_json(document.id,cache.name,response)
+                            if self.settings.studio_cache_enabled:
+                                self.storage.write_json(document.id,cache.name,response)
                         ocr_blocks = reader.blocks(document.id,number,item,response,width,height)
                         if not ocr_blocks:
                             session.add(Issue(document_id=document.id,page_number=number,block_id=None,code="ocr_no_text",stage="ocr",message="OCR found no transcribable text; page retained"))
@@ -66,11 +67,24 @@ class Orchestrator:
                 # Restartable inspection replaces only incomplete extraction state.
                 existing = set(session.scalars(select(Block.id).where(Block.document_id == document.id)))
                 for item in metadata:
-                    if not session.get(Page, f"{document.id}-p{item['number']}"):
+                    stored_page=session.get(Page, f"{document.id}-p{item['number']}")
+                    if not stored_page:
                         session.add(Page(id=f"{document.id}-p{item['number']}", document_id=document.id, number=item["number"], width=item["width"], height=item["height"], metadata_json=item))
+                    elif not self.settings.studio_cache_enabled:
+                        stored_page.metadata_json=item
+                        stored_page.dirty=True
                 for item in blocks:
                     if item["id"] not in existing:
                         session.add(Block(**item))
+                    elif not self.settings.studio_cache_enabled:
+                        stored_block=session.get(Block,item["id"])
+                        for key,value in item.items():
+                            setattr(stored_block,key,value)
+                if not self.settings.studio_cache_enabled:
+                    current_ids={item["id"] for item in blocks}
+                    for identity in existing-current_ids:
+                        retired=session.get(Block,identity)
+                        retired.style={**retired.style,"retired":True}
                 document.page_count = len(metadata)
                 await asyncio.to_thread(self.source_previews, source, document.id)
                 structured = self.storage.write_json(document.id, "structure.json", {"pages": metadata, "blocks": blocks})
@@ -87,24 +101,40 @@ class Orchestrator:
                 document.target_language, document.script = job.payload["target_language"], job.payload["script"]
                 blocks = [b for b in session.scalars(select(Block).where(Block.document_id == document.id).order_by(Block.page_number, Block.reading_order)) if not b.style.get("retired")]
                 session.commit()
-                for index, block in enumerate(blocks):
-                    if changed_target:
-                        session.get(Page, f"{document.id}-p{block.page_number}").dirty = True
-                    if not latest(session, block.id, document.target_language, document.script):
-                        try:
-                            text, metadata = await self.translator.run(block, document.target_language, document.script)
-                            previous = latest(session, block.id)
-                            session.add(Translation(block_id=block.id, target_language=document.target_language, script=document.script, text=text, revision=previous.revision+1 if previous else 1, metadata_json=metadata))
-                            for issue in session.scalars(select(Issue).where(Issue.block_id == block.id, Issue.stage == "translator")):
-                                issue.resolution = "resolved"
-                        except StudioError as exc:
-                            if exc.code not in {"translation_truncated", "protected_value_changed"}:
-                                raise
-                            session.add(Issue(document_id=document.id, block_id=block.id, page_number=block.page_number, code=exc.code, stage="translator", message=exc.message))
-                        session.get(Page, f"{document.id}-p{block.page_number}").dirty = True
-                    job.progress = .7 * (index + 1)/max(1,len(blocks))
+                stats={"batch_calls":0,"invalid_batches":0,"individual_calls":0,"batch_tokens":0}
+                completed=0
+                pending=[]
+
+                def save_result(block,text,metadata,error=None):
+                    nonlocal completed
+                    if error is None:
+                        previous=latest(session,block.id)
+                        session.add(Translation(block_id=block.id,target_language=document.target_language,script=document.script,text=text,revision=previous.revision+1 if previous else 1,metadata_json={**metadata,"job_id":job.id}))
+                        for issue in session.scalars(select(Issue).where(Issue.block_id==block.id,Issue.stage=="translator")):
+                            issue.resolution="resolved"
+                    else:
+                        session.add(Issue(document_id=document.id,block_id=block.id,page_number=block.page_number,code=error.code,stage="translator",message=error.message))
+                    session.get(Page,f"{document.id}-p{block.page_number}").dirty=True
+                    completed+=1
+                    job.progress=.7*completed/max(1,len(blocks))
+                    job.payload={**job.payload,"translation_batch_stats":dict(stats)}
                     session.commit()
-            await asyncio.to_thread(self.render, document.id)
+
+                for block in blocks:
+                    if changed_target:
+                        session.get(Page,f"{document.id}-p{block.page_number}").dirty=True
+                    if self.settings.studio_cache_enabled and latest(session,block.id,document.target_language,document.script):
+                        completed+=1
+                    elif literal_only(block.source_text):
+                        text,metadata=await self.translator.run(block,document.target_language,document.script)
+                        save_result(block,text,metadata)
+                    else:
+                        pending.append(block)
+                session.commit()
+                for batch in self.translator.batches(pending,self.settings.studio_translation_batch_size,self.settings.studio_translation_batch_chars):
+                    async for block,text,metadata,error in self.translator.translate_batch(batch,document.target_language,document.script,stats):
+                        save_result(block,text,metadata,error)
+            await asyncio.to_thread(self.render, document.id, job.id if job.operation=="translate" and not self.settings.studio_cache_enabled else None)
             with self.sessions() as check:
                 current = [b for b in check.scalars(select(Block).where(Block.document_id==document.id)) if not b.style.get("retired")]
                 fitted = sum(1 for b in current if latest(check,b.id,document.target_language,document.script) and (layout:=check.get(LayoutResult,b.id)) and layout.fit_status=="fitted")
@@ -127,6 +157,7 @@ class Orchestrator:
         new_blocks = BlockMakerAgent().run(document_id,extracted)
         with self.sessions() as session:
             digital_pages = {p.number for p in session.scalars(select(Page).where(Page.document_id==document_id)) if p.metadata_json.get("extraction_method","digital")=="digital"}
+            previous_blocks = list(session.scalars(select(Block).where(Block.document_id==document_id)))
             identities = set()
             for item in new_blocks:
                 if item["page_number"] not in digital_pages:
@@ -142,6 +173,18 @@ class Orchestrator:
                         setattr(block,key,value)
                 else:
                     session.add(Block(**item))
+                    # Reuse revisions only when an old block describes exactly
+                    # this span. Never attach a combined row/paragraph translation
+                    # to one of its new child boxes.
+                    matching = [b for b in previous_blocks if
+                        b.page_number == item["page_number"] and
+                        b.source_text == item["source_text"] and
+                        len(b.bbox) == 4 and
+                        all(abs(a-c)<.01 for a,c in zip(b.bbox,item["bbox"]))]
+                    if len(matching) == 1:
+                        for old in session.scalars(select(Translation).where(Translation.block_id==matching[0].id)):
+                            if old.metadata_json.get("source_hash",source_hash(matching[0].source_text)) == source_hash(item["source_text"]):
+                                session.add(Translation(block_id=item["id"],target_language=old.target_language,script=old.script,text=old.text,revision=old.revision,metadata_json={**old.metadata_json,"source_hash":source_hash(item["source_text"]),"migrated_from":old.block_id}))
                     changed = True
                 if changed:
                     session.get(Page,f"{document_id}-p{item['page_number']}").dirty = True
@@ -160,14 +203,14 @@ class Orchestrator:
             for page in pdf:
                 page.get_pixmap().save(str(self.storage.path(document_id, f"source-{page.number+1}.png")))
 
-    def render(self, document_id):
+    def render(self, document_id, translation_job_id=None):
         self.refresh_geometry(document_id)
         with self.sessions() as session:
             document = session.get(Document, document_id)
             source = self.storage.path(document_id, "source.pdf")
             pages = list(session.scalars(select(Page).where(Page.document_id == document_id).order_by(Page.number)))
             for page in pages:
-                if not page.dirty:
+                if self.settings.studio_cache_enabled and not page.dirty:
                     continue
                 for issue in session.scalars(select(Issue).where(Issue.document_id == document_id, Issue.page_number == page.number, Issue.stage == "checker")):
                     issue.resolution = "resolved"
@@ -179,6 +222,8 @@ class Orchestrator:
                 occupied = [b.bbox for b in blocks] + graphics
                 for block in blocks:
                     translation = latest(session, block.id, document.target_language, document.script)
+                    if translation and translation_job_id and translation.metadata_json.get("job_id")!=translation_job_id:
+                        translation=None
                     if not translation:
                         stale=session.get(LayoutResult,block.id)
                         if stale:
@@ -204,6 +249,8 @@ class Orchestrator:
             active=[b for b in session.scalars(select(Block).where(Block.document_id==document_id)) if not b.style.get("retired")]
             has_rendered=any(latest(session,b.id,document.target_language,document.script) and (l:=session.get(LayoutResult,b.id)) and l.fit_status=="fitted" for b in active)
             kind="final" if has_rendered or not active else "draft"
+            if kind=="draft":
+                self.storage.path(document_id,"final.pdf").unlink(missing_ok=True)
             destination = self.storage.path(document_id, kind+".pdf")
             Renderer().assemble(source, {p.number:self.storage.path(document_id,f"page-{p.number}.pdf") for p in pages}, destination)
             session.add(Artifact(document_id=document_id, kind=kind, path=str(destination)))

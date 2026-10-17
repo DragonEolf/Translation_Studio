@@ -19,7 +19,7 @@ class Renderer:
                 page.apply_redactions(images=0, graphics=0, text=0)
             for block, translation, layout in fitted:
                 font_path = None if layout.font == "sans-serif" else layout.font
-                content, css = markup(translation.text, layout.font_size, block.style["color"], font_path, block.style.get("bold", False),block.style.get("align","left"),block.style.get("italic",False))
+                content, css = markup(translation.text, layout.font_size, block.style["color"], font_path, block.style.get("bold", False),block.style.get("align","left"),block.style.get("italic",False),preserve_breaks=block.style.get("ocr",False))
                 if all(ord(c)<0x300 for c in translation.text):
                     spare,_=page.insert_htmlbox(fitz.Rect(layout.bbox),content,css=css,archive=fitz.Archive(str(Path(font_path).parent)) if font_path else None,scale_low=1)
                     if spare<0:
@@ -40,7 +40,9 @@ class Renderer:
                 rect=fitz.Rect(layout.bbox)
                 size=max(.5,rect.height/1.374)
                 origin=fitz.Point(rect.x0,rect.y0+1.075*size)
-                stretch=rect.width/fitz.get_text_length("x",fontname="helv",fontsize=size)
+                # Keep the semantic glyph inside the box despite PDF matrix
+                # rounding, so exact-box extraction returns the whole ActualText.
+                stretch=rect.width*.999/fitz.get_text_length("x",fontname="helv",fontsize=size)
                 before=set(page.get_contents())
                 page.insert_text(origin,"x",fontsize=size,fontname="helv",render_mode=3,morph=(origin,fitz.Matrix(stretch,1)))
                 actual="FEFF"+translation.text.encode("utf-16-be").hex().upper()

@@ -10,3 +10,5 @@ data/
 !.env.example
 Test PDFs Translation Studio/
 fonts/*.zip
+artifacts/
+output/

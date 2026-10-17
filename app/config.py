@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     studio_max_upload_mb: int = 25
     studio_max_pages: int = 100
     studio_provider_attempts: int = 4
+    studio_translation_batch_size: int = Field(default=30,ge=1,le=100)
+    studio_translation_batch_chars: int = Field(default=6000,ge=256,le=24000)
+    studio_cache_enabled: bool = False
 
 
 class StudioError(Exception):

@@ -26,40 +26,43 @@ class BlockMakerAgent:
             sizes = [s["size"] for b in raw for line in b["lines"] for s in line["spans"]]
             body_size = median(sizes) if sizes else 12
             cells = [cell for table in page.get("tables",[]) for cell in table["cells"]]
-            for order, block in enumerate(raw):
-                lines = [{**line,"spans":[s for s in line["spans"] if not any(inside(s,cell["bbox"]) for cell in cells)]} for line in block["lines"]]
-                lines = [line for line in lines if any(s["text"].strip() for s in line["spans"])]
-                if not lines:
-                    continue
-                spans = [s for line in lines for s in line["spans"] if s["text"].strip()]
-                text = "\n".join("".join(s["text"] for s in line["spans"]) for line in lines).strip()
-                if not text:
-                    continue
-                largest = max(spans, key=lambda s: s["size"])
-                kind = "paragraph"
-                if largest["size"] >= body_size * 1.2:
-                    kind = "heading"
-                elif re.match(r"^(?:[•▪*-]|\d+[.)])\s", text):
-                    kind = "list_item"
-                elif re.match(r"^(?:Figure|Table|Fig\.)\s+\d", text, re.I):
-                    kind = "caption"
-                elif block["bbox"][1] < page["height"] * .05:
-                    kind = "header"
-                elif block["bbox"][3] > page["height"] * .95:
-                    kind = "footer"
-                elif largest["size"] < body_size * .85 and block["bbox"][1] > page["height"] * .7:
-                    kind = "footnote"
-                box = fitz.Rect(spans[0]["bbox"])
-                for s in spans[1:]:
-                    box |= fitz.Rect(s["bbox"])
-                blocks.append({"id": f"{document_id}-p{number}-b{order}", "document_id": document_id, "page_number": number, "type": kind, "reading_order": order, "bbox": list(box), "source_text": text, "style": {**span_style(spans),"source_regions":[list(s["bbox"]) for s in spans], "vertical": any(abs(line["dir"][0]-1)>.01 or abs(line["dir"][1])>.01 for line in lines)}, "confidence": .8})
-            for table_index, table in enumerate(page.get("tables", [])):
-                for cell_index, cell in enumerate(table["cells"]):
-                    related = [s for b in raw for line in b["lines"] for s in line["spans"] if s["text"].strip() and inside(s,cell["bbox"])]
-                    style = span_style(related) if related else {"size":body_size,"font":"unknown","color":0}
-                    box = fitz.Rect(cell["bbox"]) + (.8,.5,-.8,-.5)
-                    # Merged cells still have usable rectangles: render each detected cell.
-                    blocks.append({"id":f"{document_id}-p{number}-t{table_index}-c{cell_index}", "document_id":document_id,"page_number":number,"type":"table_cell","reading_order":len(raw)+table_index*1000+cell_index,"bbox":list(box),"source_text":cell["text"],"style":{**style,"source_regions":[list(s["bbox"]) for s in related],"table_cell":True,"align":"center" if box.width < 240 or style.get("color")==16777215 else "left"},"confidence":.9})
+            for block_index, block in enumerate(raw):
+                for line_index, line in enumerate(block["lines"]):
+                    for span_index, span in enumerate(line["spans"]):
+                        text = span["text"].strip()
+                        if not text:
+                            continue
+                        box = list(span["bbox"])
+                        cell = next((c for c in cells if inside(span,c["bbox"])),None)
+                        kind = "paragraph"
+                        if cell:
+                            kind = "table_cell"
+                        elif span["size"] >= body_size * 1.2:
+                            kind = "heading"
+                        elif re.match(r"^(?:[•▪*-]|\d+[.)])\s",text):
+                            kind = "list_item"
+                        elif re.match(r"^(?:Figure|Table|Fig\.)\s+\d",text,re.I):
+                            kind = "caption"
+                        elif box[1] < page["height"] * .05:
+                            kind = "header"
+                        elif box[3] > page["height"] * .95:
+                            kind = "footer"
+                        elif span["size"] < body_size * .85 and box[1] > page["height"] * .7:
+                            kind = "footnote"
+                        style = {
+                            **span_style([span]), "source_regions":[box],
+                            "digital_span":True, "fixed_box":True,
+                            "align":"left",
+                            "vertical":abs(line["dir"][0]-1)>.01 or abs(line["dir"][1])>.01,
+                        }
+                        if cell:
+                            style.update(table_cell=True,table_cell_bbox=cell["bbox"])
+                        blocks.append({
+                            "id":f"{document_id}-p{number}-b{block_index}-l{line_index}-s{span_index}",
+                            "document_id":document_id,"page_number":number,
+                            "type":kind,"reading_order":len(blocks),"bbox":box,
+                            "source_text":text,"style":style,"confidence":.8,
+                        })
         # Stable spatial ordering groups left/right columns when a broad gutter exists.
         for number in range(1,len(pages)+1):
             items = [b for b in blocks if b["page_number"] == number]

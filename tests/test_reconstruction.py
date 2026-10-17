@@ -95,3 +95,159 @@ def test_multiline_indic_text_has_no_duplicates(tmp_path):
     Renderer().render_page(source,1,[(block,SimpleNamespace(text=text),layout)],destination)
     with fitz.open(destination) as pdf:
         assert " ".join(pdf[0].get_text().split())==" ".join(text.split())
+
+
+def test_ocr_reconstruction_preserves_title_and_paragraph_breaks(tmp_path):
+    from app.services.renderer import Renderer
+    from app.services.text_fitter import TextFitter
+    source = tmp_path / "source.pdf"
+    with fitz.open() as pdf:
+        pdf.new_page(width=300, height=250)
+        pdf.save(source)
+    text = "TITLE\n\nFirst paragraph.\n\nSecond paragraph."
+    block = SimpleNamespace(bbox=[30,30,270,220], style={"size":12,"color":0,"ocr":True})
+    layout = SimpleNamespace(**TextFitter().fit(block,text,300,250,[],None))
+    assert layout.fit_status == "fitted"
+    destination = tmp_path / "translated.pdf"
+    Renderer().render_page(source,1,[(block,SimpleNamespace(text=text),layout)],destination)
+    with fitz.open(destination) as pdf:
+        words = {w[4]:w for w in pdf[0].get_text("words")}
+        # Actual rendered positions must preserve the two explicit blank lines.
+        assert words["First"][1] - words["TITLE"][1] > 20
+        assert words["Second"][1] - words["First"][1] > 20
+
+
+def test_ocr_signature_crop_is_retained_pixel_for_pixel(tmp_path):
+    from app.agents.reorganiser import ReorganiserAgent
+    from app.agents.checker import CheckerAgent
+    from app.services.renderer import Renderer
+    source = tmp_path / "signature.pdf"
+    with fitz.open() as pdf:
+        page = pdf.new_page(width=300,height=200)
+        page.insert_text((30,50),"Landlord's Signature:")
+        page.draw_polyline([(140,60),(160,30),(155,65),(200,40),(220,55)])
+        pdf.save(source)
+    block = SimpleNamespace(id="signature",source_text="Landlord's Signature: OCR guess",bbox=[25,25,240,80],style={"size":24,"color":0,"ocr":True},confidence=.9)
+    translation = SimpleNamespace(text="Translated signature",target_language="en",script="native")
+    layout = SimpleNamespace(**ReorganiserAgent(FontRegistry()).run(block,translation,SimpleNamespace(width=300,height=200),[]))
+    assert layout.fit_status == "signature_review_required"
+    destination = tmp_path / "translated.pdf"
+    entries = [(block,translation,layout)]
+    Renderer().render_page(source,1,entries,destination)
+    with fitz.open(source) as original, fitz.open(destination) as output:
+        assert original[0].get_pixmap().samples == output[0].get_pixmap().samples
+    assert [i["code"] for i in CheckerAgent().run(source,destination,1,entries)] == ["signature_review_required"]
+
+
+def test_unruled_table_row_cannot_silently_reflow_into_prose(tmp_path):
+    from app.agents.reorganiser import ReorganiserAgent
+    from app.services.renderer import Renderer
+    source = tmp_path / "table.pdf"
+    with fitz.open() as pdf:
+        page = pdf.new_page(width=500,height=200)
+        for x,text in [(30,"01"),(100,"CY1001"),(200,"Chemistry"),(400,"10")]:
+            page.insert_text((x,60),text,fontsize=10)
+        pdf.save(source)
+    blocks = BlockMakerAgent().run("test",TextReaderAgent().run(source))
+    assert len(blocks) == 4
+    entries = []
+    for b in blocks:
+        translation = SimpleNamespace(text="Physics" if b["source_text"]=="Chemistry" else b["source_text"],target_language="en",script="native")
+        result = ReorganiserAgent(FontRegistry()).run(SimpleNamespace(**b),translation,SimpleNamespace(width=500,height=200),[])
+        assert result["fit_status"] == "fitted"
+        assert result["bbox"] == b["bbox"]
+        entries.append((SimpleNamespace(**b),translation,SimpleNamespace(**result)))
+    destination = tmp_path / "translated.pdf"
+    Renderer().render_page(source,1,entries,destination)
+    with fitz.open(destination) as pdf:
+        for block,translation,_ in entries:
+            assert pdf[0].get_textbox(fitz.Rect(block.bbox)).strip() == translation.text
+        assert "Chemistry" not in pdf[0].get_text()
+
+
+def test_selectable_lines_and_styles_keep_independent_fixed_boxes(tmp_path):
+    from app.services.text_fitter import TextFitter
+    source = tmp_path / "styles.pdf"
+    with fitz.open() as pdf:
+        page = pdf.new_page(width=400,height=300)
+        page.insert_text((30,60),"Title",fontsize=18,fontname="hebo")
+        page.insert_text((30,100),"First line",fontsize=12)
+        page.insert_text((110,100),"Bold",fontsize=12,fontname="hebo")
+        page.insert_text((30,120),"Second line",fontsize=12)
+        pdf.save(source)
+        expected = [(s["text"],list(s["bbox"])) for b in page.get_text("dict",sort=True)["blocks"] if b["type"]==0 for l in b["lines"] for s in l["spans"] if s["text"].strip()]
+    blocks = BlockMakerAgent().run("test",TextReaderAgent().run(source))
+    assert sorted((b["source_text"],b["bbox"]) for b in blocks) == sorted(expected)
+    assert next(b for b in blocks if b["source_text"]=="Bold")["style"]["bold"]
+    for block in blocks:
+        assert block["style"]["source_regions"] == [block["bbox"]]
+        result = TextFitter().fit(SimpleNamespace(**block),"Too long "*100,400,300,[],None)
+        assert result["fit_status"] == "fitted"
+        assert 0 < result["font_size"] < block["style"]["size"]
+        assert result["bbox"] == block["bbox"]
+
+
+def test_geometry_upgrade_reuses_only_exact_span_revisions(tmp_path):
+    from app.models import Document,Page,Block,Translation
+    from app.orchestrator import latest
+    from sqlalchemy import select
+    root = tmp_path / "doc"
+    root.mkdir()
+    with fitz.open() as pdf:
+        page = pdf.new_page(width=400,height=300)
+        page.insert_text((30,60),"Title",fontsize=18)
+        page.insert_text((30,100),"Code",fontsize=12)
+        page.insert_text((150,100),"Course",fontsize=12)
+        pdf.save(root/"source.pdf")
+    extracted = BlockMakerAgent().run("doc",TextReaderAgent().run(root/"source.pdf"))
+    title = next(b for b in extracted if b["source_text"]=="Title")
+    row = [b for b in extracted if b["source_text"]!="Title"]
+    app = create_app(Settings(studio_data_dir=tmp_path,studio_font_dir=None))
+    with app.state.sessions() as s:
+        s.add(Document(id="doc",filename="source.pdf",sha256="test",target_language="en"))
+        s.flush()
+        s.add(Page(id="doc-p1",document_id="doc",number=1,width=400,height=300,metadata_json={"extraction_method":"digital"}))
+        s.add(Block(**{**title,"id":"old-title"}))
+        bbox = list(fitz.Rect(row[0]["bbox"])|fitz.Rect(row[1]["bbox"]))
+        s.add(Block(id="old-row",document_id="doc",page_number=1,type="paragraph",reading_order=1,bbox=bbox,source_text="Code\nCourse",style={"size":12,"color":0}))
+        s.flush()
+        s.add(Translation(block_id="old-title",target_language="en",script="native",text="Heading",revision=2,metadata_json={"source_hash":source_hash("Title")}))
+        s.add(Translation(block_id="old-row",target_language="en",script="native",text="Combined translation",revision=1,metadata_json={"source_hash":source_hash("Code\nCourse")}))
+        s.commit()
+    app.state.orchestrator.refresh_geometry("doc")
+    app.state.orchestrator.refresh_geometry("doc")
+    with app.state.sessions() as s:
+        assert s.get(Block,"old-row").style["retired"]
+        assert latest(s,title["id"],"en","native").text == "Heading"
+        assert latest(s,title["id"],"en","native").revision == 2
+        assert len(list(s.scalars(select(Translation).where(Translation.block_id==title["id"])))) == 1
+        assert all(latest(s,b["id"],"en","native") is None for b in row)
+
+
+def test_hindi_translation_fits_tight_span_without_moving_neighbor(tmp_path):
+    from app.agents.reorganiser import ReorganiserAgent
+    from app.agents.checker import CheckerAgent
+    from app.services.renderer import Renderer
+    fonts = Path("fonts").resolve()
+    if not fonts.exists(): pytest.skip("Local Noto fonts are required")
+    source = tmp_path / "tight.pdf"
+    with fitz.open() as pdf:
+        page = pdf.new_page(width=300,height=200)
+        page.insert_text((30,60),"Ecology and Environment",fontsize=7)
+        page.insert_text((200,60),"2023",fontsize=7)
+        pdf.save(source)
+    b = next(b for b in BlockMakerAgent().run("test",TextReaderAgent().run(source)) if b["source_text"]=="Ecology and Environment")
+    block = SimpleNamespace(**b)
+    translation = SimpleNamespace(text="पारिस्थितिकी और पर्यावरण का विस्तृत अध्ययन",target_language="hi",script="native")
+    layout = SimpleNamespace(**ReorganiserAgent(FontRegistry(fonts)).run(block,translation,SimpleNamespace(width=300,height=200),[]))
+    assert layout.fit_status == "fitted"
+    assert layout.bbox == block.bbox
+    assert layout.font_size < 6
+    entries = [(block,translation,layout)]
+    destination = tmp_path / "translated.pdf"
+    Renderer().render_page(source,1,entries,destination)
+    with fitz.open(source) as original,fitz.open(destination) as rendered:
+        assert original[0].search_for("2023") == rendered[0].search_for("2023")
+        assert translation.text in rendered[0].get_textbox(fitz.Rect(block.bbox))
+    issues = CheckerAgent().run(source,destination,1,entries)
+    assert issues == []

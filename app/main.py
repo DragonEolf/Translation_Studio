@@ -1,8 +1,10 @@
 import hashlib
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, Request
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException
 from pydantic import BaseModel, Field
@@ -11,7 +13,7 @@ from app.config import Settings, StudioError
 from app.models import database, Document, Page, Block, Translation, Issue, Job, Artifact, LayoutResult, uid
 from app.agents.translator import source_hash
 from app.orchestrator import Orchestrator, latest
-from app.providers.bodhan import BodhanProvider, validate_target, LANGUAGES
+from app.providers.bodhan import BodhanProvider, validate_target, LANGUAGES, LANGUAGE_NAMES
 from app.providers.reasoning import DisabledReasoningProvider
 from app.providers.ocr import BodhanOCRProvider
 from app.services.storage import Storage
@@ -55,6 +57,12 @@ def create_app(settings=None, provider=None, reasoning=None, ocr_provider=None):
     app = FastAPI(title="Translation Studio", version="0.1.0", lifespan=lifespan)
     app.state.sessions = sessions
     app.state.orchestrator = orchestrator
+    web = Path(__file__).parent / "web"
+    app.mount("/assets", StaticFiles(directory=web), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    def home():
+        return FileResponse(web / "index.html")
 
     @app.exception_handler(StudioError)
     async def error_handler(request, exc):
@@ -88,7 +96,7 @@ def create_app(settings=None, provider=None, reasoning=None, ocr_provider=None):
 
     @app.get("/v1/health")
     def health():
-        return {"status": "ok", "reasoning_enabled": not isinstance(reasoning, DisabledReasoningProvider), "font_scripts": sorted(fonts.paths), "supported_languages": sorted(LANGUAGES)}
+        return {"status": "ok", "reasoning_enabled": not isinstance(reasoning, DisabledReasoningProvider), "font_scripts": sorted(fonts.paths), "supported_languages": sorted(LANGUAGES), "max_upload_mb":settings.studio_max_upload_mb, "max_pages":settings.studio_max_pages}
 
     @app.post("/v1/documents", status_code=202)
     async def upload(file: UploadFile) -> dict:
@@ -212,12 +220,20 @@ def create_app(settings=None, provider=None, reasoning=None, ocr_provider=None):
     @app.get("/v1/documents/{document_id}/artifacts/{filename}")
     def artifact(document_id: str, filename: str):
         with sessions() as session:
-            require(session, Document, document_id)
+            doc = require(session, Document, document_id)
+            original_name, language = doc.filename, doc.target_language
         if filename not in {"final.pdf", "draft.pdf", "structure.json"} and not __import__("re").fullmatch(r"(?:source|page)-\d+\.png", filename):
             raise StudioError("not_found", "Artifact not found", 404)
         path = storage.path(document_id, filename)
         if not path.exists():
             raise StudioError("artifact_not_ready", "Artifact is not available", 404)
-        return FileResponse(path, filename=filename)
+        download_name = filename
+        if filename in {"final.pdf","draft.pdf"}:
+            safe_name=re.sub(r'[\x00-\x1f\x7f/\\:*?"<>|]',"_",original_name)
+            stem=Path(safe_name).stem.strip(" .")[:120] or "document"
+            target=f" - {LANGUAGE_NAMES.get(language,language)}" if language else ""
+            draft=" - draft" if filename=="draft.pdf" else ""
+            download_name=f"{stem}{target}{draft}.pdf"
+        return FileResponse(path, filename=download_name)
 
     return app

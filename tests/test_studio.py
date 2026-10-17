@@ -39,7 +39,7 @@ def wait(client, response):
 
 def test_end_to_end(tmp_path):
     provider = FakeProvider()
-    app = create_app(Settings(studio_data_dir=tmp_path), provider)
+    app = create_app(Settings(studio_data_dir=tmp_path,studio_cache_enabled=True), provider)
     with TestClient(app) as client:
         response = client.post("/v1/documents",files={"file":("input.pdf",pdf_bytes(),"application/pdf")})
         doc = response.json()["document_id"]
@@ -145,7 +145,7 @@ def test_truncation_and_missing_fonts_keep_source(tmp_path):
             assert "Hello" in pdf[0].get_text()
 
 
-def test_overflow_and_font_issue(tmp_path):
+def test_fixed_box_shrinking_and_font_issue(tmp_path):
     provider = FakeProvider()
     with TestClient(create_app(Settings(studio_data_dir=tmp_path,studio_font_dir=None),provider)) as client:
         response = client.post("/v1/documents",files={"file":("input.pdf",pdf_bytes())})
@@ -157,9 +157,14 @@ def test_overflow_and_font_issue(tmp_path):
         assert "unsupported_glyphs" in {i["code"] for i in client.get(f"/v1/documents/{doc}/issues").json()}
         wait(client,client.post(f"/v1/documents/{doc}/translations",json={"target_language":"en"}))
         block = client.get(f"/v1/documents/{doc}/blocks").json()[0]
-        job = wait(client,client.put(f"/v1/blocks/{block['id']}/translation",json={"text":"Long content " * 500}))
-        assert job["status"] == "completed_with_issues"
-        assert "overflow" in {i["code"] for i in client.get(f"/v1/documents/{doc}/issues").json() if i["resolution"] != "resolved"}
+        job = wait(client,client.put(f"/v1/blocks/{block['id']}/translation",json={"text":"Long content " * 500 + "1"}))
+        assert job["status"] == "completed"
+        with client.app.state.sessions() as session:
+            from app.models import LayoutResult
+            layout = session.get(LayoutResult,block["id"])
+            assert layout.bbox == block["bbox"]
+            assert layout.fit_status == "fitted"
+            assert 0 < layout.font_size < 1
 
 
 def test_failed_job_resumes_blocks(tmp_path):
@@ -170,7 +175,7 @@ def test_failed_job_resumes_blocks(tmp_path):
                 raise StudioError("provider_unavailable","Temporary failure")
             return await super().translate(*args)
     provider = Intermittent()
-    with TestClient(create_app(Settings(studio_data_dir=tmp_path),provider)) as client:
+    with TestClient(create_app(Settings(studio_data_dir=tmp_path,studio_cache_enabled=True),provider)) as client:
         response = client.post("/v1/documents",files={"file":("input.pdf",pdf_bytes())})
         doc = response.json()["document_id"]
         wait(client,response)

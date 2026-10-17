@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Translation Studio</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header><a class="brand" href="/"><span class="brand-icon" aria-hidden="true">文</span> Translation Studio</a><span class="header-note">PDF translation</span></header>
+  <main>
+    <div class="intro"><p class="eyebrow">A document, in your language</p><h1>Upload. Translate. Download.</h1><p>Translate a PDF while keeping its text in place.</p></div>
+    <section class="workspace" aria-label="PDF translator">
+      <form id="translate-form">
+        <label class="field-label" for="pdf-file">Your document</label>
+        <label class="dropzone" id="dropzone" for="pdf-file">
+          <input id="pdf-file" name="file" type="file" accept=".pdf,application/pdf" required>
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M12 18v-7m-3 3 3-3 3 3"/></svg>
+          <strong id="file-label">Choose a PDF or drop it here</strong>
+          <span id="file-detail">PDF · Checking upload limits…</span>
+        </label>
+        <div class="language-field"><label class="field-label" for="language">Translate into</label><select id="language" name="language" disabled><option>Loading languages…</option></select></div>
+        <button id="submit" type="submit" disabled>Translate PDF <span aria-hidden="true">→</span></button>
+        <p class="account-note">Translation and scanned-page OCR use your configured Bodhan account.</p>
+      </form>
+      <div id="result" class="result" hidden aria-live="polite">
+        <div class="result-heading"><span class="status-dot" id="status-dot" aria-hidden="true"></span><h2 id="status-title">Preparing your document</h2></div>
+        <p id="status-detail"></p>
+        <div id="progress-wrap"><progress id="progress" max="100" value="0" aria-label="Translation progress"></progress><div class="progress-label"><span id="stage">Uploading</span><span id="percent">0%</span></div></div>
+        <p id="review-note" class="review-note" hidden></p>
+        <a id="download" class="download" hidden>Download translated PDF <span aria-hidden="true">↓</span></a>
+        <a id="draft" class="draft-link" hidden>Download draft for review</a>
+      </div>
+    </section>
+    <p class="footer-note">Original layout retained where possible. Complex pages may need review.</p>
+  </main>
+</body>
+</html>

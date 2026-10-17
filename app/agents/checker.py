@@ -13,8 +13,8 @@ def normalized(text):
 class CheckerAgent:
     def run(self, source, rendered, number, entries):
         issues = []
-        def add(code, message, block=None):
-            issues.append({"code": code, "message": message, "block_id": block.id if block else None, "page_number": number, "stage": "checker"})
+        def add(code, message, block=None, severity="error"):
+            issues.append({"code": code, "message": message, "block_id": block.id if block else None, "page_number": number, "stage": "checker", "severity":severity})
         with fitz.open(source) as original, fitz.open(rendered) as output:
             src, dst = original[number-1], output[0]
             mask = np.ones((math.ceil(src.rect.height), math.ceil(src.rect.width)), dtype=bool)
@@ -22,7 +22,12 @@ class CheckerAgent:
                 if block.style.get("ocr") and block.confidence < .7:
                     add("ocr_low_confidence", "OCR region detection confidence is low; verify source transcription",block)
                 if layout.fit_status != "fitted":
-                    add(layout.fit_status, "Source text retained; manual review required", block)
+                    messages = {
+                        "signature_review_required": "Original signature region retained; isolate printed text from handwriting before translating",
+                        "unsegmented_table_row": "Source row retained: separate table columns into cells before rendering translation",
+                    }
+                    message = messages.get(layout.fit_status, "Source text retained; manual review required")
+                    add(layout.fit_status, message, block)
                     continue
                 rect = fitz.Rect(layout.bbox)
                 if not src.rect.contains(rect):

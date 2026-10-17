@@ -5,6 +5,15 @@ import httpx
 from app.config import StudioError
 
 LANGUAGES = set("as bn brx doi en gu hi kn kok ks ks-Deva mai ml mni mni-Beng mr ne or pa sa sat sd sd-Arab ta te ur".split())
+LANGUAGE_NAMES = {
+    "as":"Assamese","bn":"Bengali","brx":"Bodo","doi":"Dogri","en":"English",
+    "gu":"Gujarati","hi":"Hindi","kn":"Kannada","kok":"Konkani",
+    "ks":"Kashmiri (Arabic)","ks-Deva":"Kashmiri (Devanagari)","mai":"Maithili",
+    "ml":"Malayalam","mni":"Manipuri (Meitei)","mni-Beng":"Manipuri (Bengali)",
+    "mr":"Marathi","ne":"Nepali","or":"Odia","pa":"Punjabi","sa":"Sanskrit",
+    "sat":"Santali","sd":"Sindhi (Devanagari)","sd-Arab":"Sindhi (Arabic)",
+    "ta":"Tamil","te":"Telugu","ur":"Urdu",
+}
 
 
 def validate_target(language, script):
