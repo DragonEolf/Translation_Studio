@@ -1,4 +1,4 @@
-from app.services.text_fitter import TextFitter
+from app.services.text_fitter import TextFitter, text_direction
 import pymupdf as fitz
 import re
 
@@ -18,7 +18,7 @@ def contains_signature(block):
 class ReorganiserAgent:
     def __init__(self, fonts):
         self.fonts = fonts
-        self.fitter = TextFitter()
+        self.fitter = TextFitter(fonts)
 
     def run(self, block, translation, page, obstacles):
         if contains_signature(block):
@@ -27,20 +27,21 @@ class ReorganiserAgent:
             return {"bbox": block.bbox, "font": "sans-serif", "font_size": block.style["size"], "line_breaks": [], "fit_status": "unsegmented_table_row"}
         font = self.fonts.resolve(translation.target_language, translation.script,block.style.get("bold",False))
         unsupported = block.style.get("vertical") or block.style.get("complex_table") or block.style.get("unsupported_ocr")
-        if font not in {None,"missing"}:
-            chosen = fitz.Font(fontfile=font)
-            fallback_fonts = (fitz.Font("helv"),fitz.Font("zapfdingbats"),fitz.Font("symb"))
-            if any(not chosen.has_glyph(ord(c)) and not any(f.has_glyph(ord(c)) for f in fallback_fonts) for c in translation.text if not c.isspace() and c not in "\u200c\u200d"):
-                font = "missing"
-        elif font is None:
-            chosen = fitz.Font("helv")
-            if any(not chosen.has_glyph(ord(c)) for c in translation.text if not c.isspace()):
-                font = "missing"
+        if not self.fonts.supports(translation.text, font, block.style.get("bold", False)):
+            font = "missing"
         if font == "missing" or unsupported:
             return {"bbox": block.bbox, "font": font or "sans-serif", "font_size": block.style["size"], "line_breaks": [], "fit_status": "unsupported_glyphs" if font == "missing" else "unsupported_layout"}
-        result = self.fitter.fit(block, translation.text, page.width, page.height, obstacles, font)
-        if result["fit_status"] == "overflow":
+        runs=getattr(translation,"metadata_json",{}).get("rich_text",{}).get("runs") if block.style.get("rich_text") else None
+        rich_fonts={bold:self.fonts.resolve(translation.target_language,translation.script,bold) for bold in (False,True)} if runs is not None else None
+        if runs is not None:
+            for run in runs:
+                path=rich_fonts[bool(run['style'].get('bold'))]
+                if not self.fonts.supports(run['text'], path, bool(run['style'].get('bold'))):
+                    return {"bbox":block.bbox,"font":font or "sans-serif","font_size":block.style["size"],"line_breaks":[],"fit_status":"unsupported_glyphs"}
+        direction = text_direction(translation.target_language, translation.script)
+        result = self.fitter.fit(block, translation.text, page.width, page.height, obstacles, font,runs,rich_fonts,direction=direction)
+        if result["fit_status"] == "overflow" and runs is None:
             condensed = self.fonts.resolve(translation.target_language,translation.script,block.style.get("bold",False),True)
             if condensed not in {font,None,"missing"}:
-                result = self.fitter.fit(block, translation.text,page.width,page.height,obstacles,condensed)
+                result = self.fitter.fit(block, translation.text,page.width,page.height,obstacles,condensed,direction=direction)
         return result

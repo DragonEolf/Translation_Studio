@@ -5,6 +5,8 @@ import html
 import uuid
 import xml.etree.ElementTree as ET
 from collections import Counter
+from types import SimpleNamespace
+from app.services.rich_text import rich, encode_groups, validate_groups, source_runs, literal_source, literal_target
 from app.config import StudioError
 
 LITERALS = re.compile(r"https?://[^\s]+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|\b[A-Z][A-Z0-9_-]*\d[A-Z0-9_-]*\b|\b\d+(?:[.,:/-]\d+)*(?:%)?")
@@ -82,7 +84,7 @@ class TranslatorAgent:
             # Count escaped XML, not just source text. The fixed-length nonce
             # has the same length as the live one used by translate_batch.
             candidate=batch+[block]
-            if batch and (block.page_number!=batch[0].page_number or len(candidate)>size or len(encode_batch(candidate,"B"+"0"*12)[1])>max_chars):
+            if batch and (block.page_number!=batch[0].page_number or len(candidate)>size or bool(rich(block))!=bool(rich(batch[0])) or len((encode_groups if rich(block) else encode_batch)(candidate,"B"+"0"*12)[1])>max_chars):
                 yield batch
                 batch=[]
             batch.append(block)
@@ -97,6 +99,10 @@ class TranslatorAgent:
         """
         stats = stats if stats is not None else {}
         if not blocks:
+            return
+        if rich(blocks[0]):
+            async for result in self.translate_rich_batch(blocks,language,script,stats):
+                yield result
             return
         if len(blocks)==1:
             stats["individual_calls"]=stats.get("individual_calls",0)+1
@@ -135,10 +141,61 @@ class TranslatorAgent:
         for index,(block,text) in enumerate(zip(blocks,texts)):
             yield block,text,{"source_hash":source_hash(block.source_text),"protected_values":LITERALS.findall(block.source_text),"usage":usage if index==0 else {},"batch_id":nonce,"batch_size":len(blocks)},None
 
+    async def translate_rich_batch(self, blocks, language, script, stats):
+        nonce="R"+uuid.uuid4().hex[:12]
+        ids,payload=encode_groups(blocks,nonce)
+        stats['batch_calls']=stats.get('batch_calls',0)+1
+        body=await self.provider.translate(payload,language,script)
+        usage=body.get('usage',{})
+        stats['batch_tokens']=stats.get('batch_tokens',0)+usage.get('total_tokens',0)
+        try:
+            if body.get('truncated'):
+                raise StudioError('invalid_rich_translation','Translation was truncated',502)
+            parsed=validate_groups(body.get('translation'),ids,blocks)
+        except StudioError:
+            stats['invalid_batches']=stats.get('invalid_batches',0)+1
+            if len(blocks)>1:
+                middle=len(blocks)//2
+                for half in (blocks[:middle],blocks[middle:]):
+                    async for result in self.translate_rich_batch(half,language,script,stats):
+                        yield result
+                return
+            # Last resort preserves style ownership deterministically. Context
+            # and word order are weaker, so the pipeline reports a review warning.
+            block=blocks[0];runs=[];fallback_usage=dict(usage)
+            try:
+                for run in source_runs(block):
+                    if run['text'].strip():
+                        if not literal_only(run['text']):
+                            stats['individual_calls']=stats.get('individual_calls',0)+1
+                        text,metadata=await self.run(SimpleNamespace(source_text=run['text']),language,script)
+                        for key,value in metadata.get('usage',{}).items():
+                            if isinstance(value,(int,float)):fallback_usage[key]=fallback_usage.get(key,0)+value
+                        leading=' ' if run['text'][:1].isspace() else ''
+                        trailing=' ' if run['text'][-1:].isspace() else ''
+                        runs.append({**run,'text':leading+text.strip()+trailing})
+                    else:
+                        runs.append(run)
+                text=''.join(r['text'] for r in runs)
+                validate_literals(literal_source(block),literal_target(runs))
+            except StudioError as exc:
+                if exc.code not in {'translation_truncated','protected_value_changed'}:
+                    raise
+                yield block,None,None,exc
+                return
+            stats['rich_fallbacks']=stats.get('rich_fallbacks',0)+1
+            yield block,text,{'source_hash':source_hash(block.source_text),'usage':fallback_usage,'rich_text':{'runs':runs,'fallback':True}},None
+            return
+        for index,(block,(text,runs)) in enumerate(zip(blocks,parsed)):
+            yield block,text,{'source_hash':source_hash(block.source_text),'usage':usage if index==0 else {},'batch_id':nonce,'batch_size':len(blocks),'rich_text':{'runs':runs,'fallback':False}},None
+
     async def run(self, block, language, script):
         provenance = {"source_hash":source_hash(block.source_text)}
         if literal_only(block.source_text):
-            return block.source_text,{**provenance,"unchanged_literal":True,"usage":{},"protected_values":LITERALS.findall(block.source_text)}
+            metadata={**provenance,"unchanged_literal":True,"usage":{},"protected_values":LITERALS.findall(block.source_text)}
+            if rich(block):
+                metadata['rich_text']={'runs':source_runs(block),'fallback':False}
+            return block.source_text,metadata
         protected, literals = protect(block.source_text)
         body = await self.provider.translate(protected, language, script)
         if body.get("truncated"):

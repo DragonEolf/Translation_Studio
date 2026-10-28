@@ -3,37 +3,66 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f6f0">
+  <meta name="description" content="Translate digital and scanned PDFs into Indic languages while preserving their structure.">
   <title>Translation Studio</title>
   <link rel="stylesheet" href="/assets/style.css">
   <script src="/assets/app.js" defer></script>
 </head>
 <body>
-  <header><a class="brand" href="/"><span class="brand-icon" aria-hidden="true">文</span> Translation Studio</a><span class="header-note">PDF translation</span></header>
+  <a class="skip-link" href="#translate-form">Skip to translator</a>
+  <header><a class="brand" href="/" aria-label="Translation Studio home"><span class="brand-icon" aria-hidden="true">文</span> Translation Studio</a><span class="header-note">Made for multilingual documents</span></header>
   <main>
-    <div class="intro"><p class="eyebrow">A document, in your language</p><h1>Upload. Translate. Download.</h1><p>Translate a PDF while keeping its text in place.</p></div>
+    <div class="intro"><p class="eyebrow">Across languages. On the same page.</p><h1>Same document.<br>A new language.</h1><p>Translate your PDF into an Indic language or English.<br class="desktop-break"> Keep the structure, images, and details that matter.</p></div>
     <section class="workspace" aria-label="PDF translator">
+      <div id="connection-note" class="notice" role="status" hidden><p id="connection-message"></p><button id="reconnect" type="button" class="text-button">Check connection</button></div>
       <form id="translate-form">
-        <label class="field-label" for="pdf-file">Your document</label>
+        <label class="field-label" for="pdf-file">Your PDF <span class="label-note">One document at a time</span></label>
         <label class="dropzone" id="dropzone" for="pdf-file">
-          <input id="pdf-file" name="file" type="file" accept=".pdf,application/pdf" required>
-          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M12 18v-7m-3 3 3-3 3 3"/></svg>
+          <input id="pdf-file" name="file" type="file" accept=".pdf,application/pdf" required aria-describedby="file-detail file-error">
+          <svg width="32" height="38" viewBox="0 0 28 34" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M17 1H4a3 3 0 0 0-3 3v26a3 3 0 0 0 3 3h20a3 3 0 0 0 3-3V11L17 1Z"/><path d="M17 1v10h10M14 26V16m-4 4 4-4 4 4"/></svg>
           <strong id="file-label">Choose a PDF or drop it here</strong>
-          <span id="file-detail">PDF · Checking upload limits…</span>
+          <span id="file-detail">Checking upload limits…</span>
         </label>
-        <div class="language-field"><label class="field-label" for="language">Translate into</label><select id="language" name="language" disabled><option>Loading languages…</option></select></div>
-        <button id="submit" type="submit" disabled>Translate PDF <span aria-hidden="true">→</span></button>
-        <p class="account-note">Translation and scanned-page OCR use your configured Bodhan account.</p>
+        <p id="file-error" class="field-error" role="alert" hidden></p>
+        <p class="field-hint">Digital, scanned, and mixed PDFs supported. Scans use OCR automatically.</p>
+        <div class="language-field"><label class="field-label" for="language">Translate into</label><select id="language" name="language" disabled aria-describedby="font-note"><option>Loading languages…</option></select><p id="font-note" class="field-hint warning-text" hidden></p></div>
+        <fieldset id="layout-options"><legend class="field-label">What matters most?</legend>
+          <div class="layout-choices">
+            <label class="layout-choice"><input type="radio" name="layout_mode" value="auto" checked><span><strong>Automatic · default</strong><small>Choose based on text fragmentation.</small></span></label>
+            <label class="layout-choice"><input type="radio" name="layout_mode" value="spans"><span><strong>Preserve original layout</strong><small>Keep each text box in place.</small></span></label>
+            <label class="layout-choice"><input type="radio" name="layout_mode" value="paragraphs"><span><strong>Improve readability</strong><small>Reflow paragraphs with their formatting.</small></span></label>
+          </div>
+          <p id="layout-help" class="field-hint">Paragraph reflow is experimental; dense pages can still need smaller text or review.</p>
+        </fieldset>
+        <button id="submit" type="submit" disabled><span id="submit-label">Translate PDF</span><span aria-hidden="true">→</span></button>
+        <p class="account-note">Text is sent to your configured Bodhan service; scanned pages are sent as images for OCR. Usage charges may apply.</p>
+        <p id="vision-note" class="account-note" hidden>Optional vision review is enabled: source and output crops of flagged regions are also sent to the configured vision provider for layout repair.</p>
       </form>
-      <div id="result" class="result" hidden aria-live="polite">
-        <div class="result-heading"><span class="status-dot" id="status-dot" aria-hidden="true"></span><h2 id="status-title">Preparing your document</h2></div>
-        <p id="status-detail"></p>
-        <div id="progress-wrap"><progress id="progress" max="100" value="0" aria-label="Translation progress"></progress><div class="progress-label"><span id="stage">Uploading</span><span id="percent">0%</span></div></div>
-        <p id="review-note" class="review-note" hidden></p>
-        <a id="download" class="download" hidden>Download translated PDF <span aria-hidden="true">↓</span></a>
-        <a id="draft" class="draft-link" hidden>Download draft for review</a>
-      </div>
+      <section id="result" class="result" aria-labelledby="status-title" hidden>
+        <div class="result-heading"><span class="status-dot" aria-hidden="true"></span><h2 id="status-title" tabindex="-1">Preparing your document</h2></div>
+        <p id="status-detail" role="status" aria-live="polite"></p>
+        <p id="document-note" class="document-note" hidden></p>
+        <div id="progress-wrap"><ol class="steps" aria-label="Processing stages"><li data-step="upload">Upload</li><li data-step="inspect">Read</li><li data-step="translate">Translate</li><li data-step="render">Prepare PDF</li></ol><progress id="progress" max="100" value="0" aria-label="Approximate overall progress"></progress><div class="progress-label"><span id="stage">Uploading</span><span id="percent">0%</span></div><p class="progress-note">Progress is approximate. Complex pages and scans can take longer.</p></div>
+        <div id="review-note" class="review-note" hidden><strong id="review-title">Review before sharing</strong><p id="review-summary"></p><ul id="review-reasons"></ul></div>
+        <a id="download" class="download" hidden><span>Download translated PDF</span><span aria-hidden="true">↓</span></a>
+        <a id="draft" class="draft-link" hidden>Download source-retaining draft for review</a>
+        <button id="transliterate" type="button" class="secondary-button" hidden>Transliterate remaining English</button>
+        <section id="transliteration-panel" class="transliteration-panel" aria-labelledby="transliteration-title" hidden>
+          <h3 id="transliteration-title">Choose words to pronounce in your language</h3>
+          <p class="field-hint">Choose up to 20 words or abbreviations. Acronyms use English letter names. Preview each pronunciation before applying; names can be ambiguous. Selected words are sent to Bodhan.</p>
+          <fieldset id="transliteration-choices"><legend class="field-label">Remaining English</legend><div id="transliteration-words"></div></fieldset>
+          <p id="transliteration-message" class="field-hint" role="status" aria-live="polite"></p>
+          <button id="generate-transliteration" type="button" class="secondary-button">Preview pronunciations</button>
+          <button id="apply-transliteration" type="button" class="secondary-button" hidden>Apply selected pronunciations</button>
+        </section>
+        <button id="cancel" type="button" class="secondary-button" hidden>Cancel translation</button>
+        <button id="resume" type="button" class="secondary-button" hidden>Reconnect to this job</button>
+        <button id="new-document" type="button" class="text-button" hidden>Translate another PDF</button>
+      </section>
     </section>
-    <p class="footer-note">Original layout retained where possible. Complex pages may need review.</p>
+    <p class="footer-note">Your original stays unchanged. Complex tables, diagrams, and scans may need a visual check.</p>
+    <noscript><p class="notice">Enable JavaScript to upload and translate PDFs.</p></noscript>
   </main>
 </body>
 </html>

@@ -158,7 +158,8 @@ def test_fixed_box_shrinking_and_font_issue(tmp_path):
         wait(client,client.post(f"/v1/documents/{doc}/translations",json={"target_language":"en"}))
         block = client.get(f"/v1/documents/{doc}/blocks").json()[0]
         job = wait(client,client.put(f"/v1/blocks/{block['id']}/translation",json={"text":"Long content " * 500 + "1"}))
-        assert job["status"] == "completed"
+        assert job["status"] == "completed_with_issues"
+        assert 'small_text' in {i['code'] for i in client.get(f'/v1/documents/{doc}/issues',params={'resolution':'manual_review_required'}).json()}
         with client.app.state.sessions() as session:
             from app.models import LayoutResult
             layout = session.get(LayoutResult,block["id"])

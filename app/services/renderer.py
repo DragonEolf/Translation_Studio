@@ -1,14 +1,24 @@
 from pathlib import Path
+from app.services.underlines import replaced_underlines
 import pymupdf as fitz
-from app.services.text_fitter import markup
+from app.services.layout_tools import layout_markup
 
 
 class Renderer:
+    def __init__(self, fonts=None):
+        self.fonts=fonts
+
     def render_page(self, source, number, entries, destination):
         with fitz.open(source) as original, fitz.open() as output:
             output.insert_pdf(original, from_page=number-1, to_page=number-1)
             page = output[0]
             fitted = [(b, t, layout) for b, t, layout in entries if layout.fit_status == "fitted"]
+            # Remove only fully owned decoration paths; retain tables and rules.
+            old_underlines = replaced_underlines(entries)
+            for region in old_underlines:
+                page.add_redact_annot(fitz.Rect(region), fill=False)
+            if old_underlines:
+                page.apply_redactions(images=0, graphics=1, text=1)
             for block, _, _ in fitted:
                 if block.style.get("ocr"):
                     page.draw_rect(fitz.Rect(block.bbox),color=None,fill=(1,1,1),overlay=True)
@@ -19,15 +29,15 @@ class Renderer:
                 page.apply_redactions(images=0, graphics=0, text=0)
             for block, translation, layout in fitted:
                 font_path = None if layout.font == "sans-serif" else layout.font
-                content, css = markup(translation.text, layout.font_size, block.style["color"], font_path, block.style.get("bold", False),block.style.get("align","left"),block.style.get("italic",False),preserve_breaks=block.style.get("ocr",False))
+                content, css, archive = layout_markup(block, translation, layout, self.fonts)
                 if all(ord(c)<0x300 for c in translation.text):
-                    spare,_=page.insert_htmlbox(fitz.Rect(layout.bbox),content,css=css,archive=fitz.Archive(str(Path(font_path).parent)) if font_path else None,scale_low=1)
+                    spare,_=page.insert_htmlbox(fitz.Rect(layout.bbox),content,css=css,archive=archive,scale_low=1)
                     if spare<0:
                         raise RuntimeError("Validated layout failed while rendering")
                     continue
                 with fitz.open() as shaped:
                     shape_page=shaped.new_page(width=page.rect.width,height=page.rect.height)
-                    spare,_=shape_page.insert_htmlbox(fitz.Rect(layout.bbox),content,css=css,archive=fitz.Archive(str(Path(font_path).parent)) if font_path else None,scale_low=1)
+                    spare,_=shape_page.insert_htmlbox(fitz.Rect(layout.bbox),content,css=css,archive=archive,scale_low=1)
                     if spare<0:
                         raise RuntimeError("Validated layout failed while rendering")
                     # Store the correctly shaped visible glyphs as vector outlines.

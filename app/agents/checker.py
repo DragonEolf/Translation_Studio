@@ -4,6 +4,7 @@ import unicodedata
 import numpy as np
 import pymupdf as fitz
 from app.agents.translator import LITERALS
+from app.services.rich_text import literal_source
 
 
 def normalized(text):
@@ -17,6 +18,7 @@ class CheckerAgent:
             issues.append({"code": code, "message": message, "block_id": block.id if block else None, "page_number": number, "stage": "checker", "severity":severity})
         with fitz.open(source) as original, fitz.open(rendered) as output:
             src, dst = original[number-1], output[0]
+            textpage = dst.get_textpage()
             mask = np.ones((math.ceil(src.rect.height), math.ceil(src.rect.width)), dtype=bool)
             for block, translation, layout in entries:
                 if block.style.get("ocr") and block.confidence < .7:
@@ -32,10 +34,10 @@ class CheckerAgent:
                 rect = fitz.Rect(layout.bbox)
                 if not src.rect.contains(rect):
                     add("clipping", "Layout exceeds page boundaries", block)
-                extracted = dst.get_textbox(rect + (-2, -2, 2, 2))
+                extracted = dst.get_textbox(rect + (-2, -2, 2, 2), textpage=textpage)
                 if normalized(translation.text) not in normalized(extracted):
                     add("missing_text", "Rendered text differs from expected translation", block)
-                for literal in LITERALS.findall(block.source_text):
+                for literal in LITERALS.findall(literal_source(block)):
                     if literal not in translation.text:
                         add("protected_value_changed", "A source literal is missing from translation", block)
                 for region in (block.bbox, layout.bbox):

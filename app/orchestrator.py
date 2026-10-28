@@ -9,8 +9,14 @@ from app.agents.translator import TranslatorAgent, source_hash, literal_only
 from app.agents.reorganiser import ReorganiserAgent
 from app.agents.checker import CheckerAgent
 from app.services.renderer import Renderer
+from app.services.cell_layout import CellLayout
+from app.services.typography import TypographyPass, diagnostics
+from app.services.vision_repair import review_page
 from app.config import StudioError
+from app.services.cancellation import CancellationToken
+from app.services import transliteration as translit
 from app.agents.ocr_reader import OCRReaderAgent
+from app.services.rich_text import group_blocks, export_xliff, rich, format_hash, AUTO_PARAGRAPH_MIN_SPANS
 
 
 def latest(session, block_id, language=None, script=None):
@@ -19,6 +25,8 @@ def latest(session, block_id, language=None, script=None):
         query = query.where(Translation.target_language == language, Translation.script == script)
     block = session.get(Block,block_id)
     for translation in session.scalars(query.order_by(Translation.revision.desc())):
+        if language and rich(block) and translation.metadata_json.get('format_hash')!=format_hash(block):
+            continue
         if not language or translation.metadata_json.get("source_hash",source_hash(block.source_text)) == source_hash(block.source_text):
             return translation
     return None
@@ -31,12 +39,27 @@ class Orchestrator:
         self.reorganiser = ReorganiserAgent(fonts)
         self.reasoning = reasoning
         self.ocr_provider = ocr_provider
+        self.vision_reviewer = None
 
-    async def run(self, job_id):
+    async def run(self, job_id, cancel=None):
+        cancel = cancel or CancellationToken()
+        cancel.check()
         with self.sessions() as session:
             job = session.get(Job, job_id)
             document = session.get(Document, job.document_id)
             source = self.storage.path(document.id, "source.pdf")
+            if job.operation == "transliterate_preview":
+                suggestions=[]
+                words=job.payload['words']
+                for index,word in enumerate(words):
+                    cancel.check()
+                    body=await cancel.wait(self.transliterator.transliterate(translit.pronunciation_input(word),job.payload['target_language']))
+                    replacement=translit.validate_replacement(body.get('transliteration'))
+                    suggestions.append({'word':word,'replacement':replacement})
+                    job.progress=(index+1)/len(words)
+                    job.payload={**job.payload,'suggestions':list(suggestions)}
+                    session.commit()
+                return 'completed'
             if job.operation == "inspect":
                 metadata = await asyncio.to_thread(InspectorAgent().run, source, self.settings.studio_max_pages)
                 extracted = await asyncio.to_thread(TextReaderAgent().run, source)
@@ -44,6 +67,7 @@ class Orchestrator:
                 for issue in session.scalars(select(Issue).where(Issue.document_id==document.id,Issue.stage=="ocr")):
                     issue.resolution = "resolved"
                 for item in metadata:
+                    cancel.check()
                     number = item["number"]
                     if item["extraction_method"] == "ocr":
                         reader = OCRReaderAgent()
@@ -53,7 +77,7 @@ class Orchestrator:
                             import json
                             response = json.loads(cache.read_text(encoding="utf-8"))
                         else:
-                            response = await self.ocr_provider.extract(png)
+                            response = await cancel.wait(self.ocr_provider.extract(png))
                             reader.blocks(document.id,number,item,response,width,height)
                             if self.settings.studio_cache_enabled:
                                 self.storage.write_json(document.id,cache.name,response)
@@ -92,6 +116,9 @@ class Orchestrator:
                 session.commit()
                 return "completed_with_issues" if session.scalar(select(Issue.id).where(Issue.document_id==document.id,Issue.resolution!="resolved")) else "completed"
             if job.operation == "translate":
+                for page in session.scalars(select(Page).where(Page.document_id==document.id)):
+                    page.metadata_json={**page.metadata_json,'layout_mode':job.payload.get('layout_mode','spans')}
+                session.commit()
                 await asyncio.to_thread(self.refresh_geometry,document.id)
                 session.expire_all()
                 changed_target = (document.target_language, document.script) != (job.payload["target_language"], job.payload["script"])
@@ -107,11 +134,14 @@ class Orchestrator:
 
                 def save_result(block,text,metadata,error=None):
                     nonlocal completed
+                    cancel.check()
                     if error is None:
                         previous=latest(session,block.id)
-                        session.add(Translation(block_id=block.id,target_language=document.target_language,script=document.script,text=text,revision=previous.revision+1 if previous else 1,metadata_json={**metadata,"job_id":job.id}))
+                        session.add(Translation(block_id=block.id,target_language=document.target_language,script=document.script,text=text,revision=previous.revision+1 if previous else 1,metadata_json={**metadata,"job_id":job.id,**({"format_hash":format_hash(block)} if rich(block) else {})}))
                         for issue in session.scalars(select(Issue).where(Issue.block_id==block.id,Issue.stage=="translator")):
                             issue.resolution="resolved"
+                        if metadata.get('rich_text',{}).get('fallback'):
+                            session.add(Issue(document_id=document.id,block_id=block.id,page_number=block.page_number,code='inline_formatting_fallback',stage='translator',severity='warning',message='Inline tags failed validation. Formatted runs were translated separately; review sentence flow.'))
                     else:
                         session.add(Issue(document_id=document.id,block_id=block.id,page_number=block.page_number,code=error.code,stage="translator",message=error.message))
                     session.get(Page,f"{document.id}-p{block.page_number}").dirty=True
@@ -132,15 +162,26 @@ class Orchestrator:
                         pending.append(block)
                 session.commit()
                 for batch in self.translator.batches(pending,self.settings.studio_translation_batch_size,self.settings.studio_translation_batch_chars):
-                    async for block,text,metadata,error in self.translator.translate_batch(batch,document.target_language,document.script,stats):
-                        save_result(block,text,metadata,error)
-            await asyncio.to_thread(self.render, document.id, job.id if job.operation=="translate" and not self.settings.studio_cache_enabled else None)
+                    cancel.check()
+                    stream = self.translator.translate_batch(batch,document.target_language,document.script,stats)
+                    try:
+                        while True:
+                            try:
+                                block,text,metadata,error = await cancel.wait(anext(stream))
+                            except StopAsyncIteration:
+                                break
+                            save_result(block,text,metadata,error)
+                    finally:
+                        await stream.aclose()
+            cancel.check()
+            layout_report = await asyncio.to_thread(self.render, document.id, job.id if job.operation=="translate" and not self.settings.studio_cache_enabled else None, cancel)
+            cancel.check()
             with self.sessions() as check:
                 current = [b for b in check.scalars(select(Block).where(Block.document_id==document.id)) if not b.style.get("retired")]
                 fitted = sum(1 for b in current if latest(check,b.id,document.target_language,document.script) and (layout:=check.get(LayoutResult,b.id)) and layout.fit_status=="fitted")
                 summary={"total_blocks":len(current),"rendered_blocks":fitted,"retained_source_blocks":len(current)-fitted}
                 result_job=check.get(Job,job_id)
-                result_job.payload={**result_job.payload,"result":summary}
+                result_job.payload={**result_job.payload,"result":summary,"layout_review_stats":layout_report}
                 check.commit()
                 unresolved_issues = list(check.scalars(select(Issue).where(Issue.document_id == document.id, Issue.resolution != "resolved")))
                 for issue in unresolved_issues:
@@ -156,6 +197,15 @@ class Orchestrator:
         extracted = TextReaderAgent().run(self.storage.path(document_id,"source.pdf"))
         new_blocks = BlockMakerAgent().run(document_id,extracted)
         with self.sessions() as session:
+            stored_pages=list(session.scalars(select(Page).where(Page.document_id==document_id)))
+            mode_pages={mode:{p.number for p in stored_pages if p.metadata_json.get('layout_mode')==mode} for mode in ('paragraphs','auto')}
+            selected=[]
+            for mode, numbers in mode_pages.items():
+                if numbers:
+                    grouped=group_blocks(new_blocks,extracted,min_spans=AUTO_PARAGRAPH_MIN_SPANS if mode=='auto' else 1)
+                    selected.extend(b for b in grouped if b['page_number'] in numbers)
+            grouped_pages=mode_pages['paragraphs'] | mode_pages['auto']
+            new_blocks=[b for b in new_blocks if b['page_number'] not in grouped_pages]+selected
             digital_pages = {p.number for p in session.scalars(select(Page).where(Page.document_id==document_id)) if p.metadata_json.get("extraction_method","digital")=="digital"}
             previous_blocks = list(session.scalars(select(Block).where(Block.document_id==document_id)))
             identities = set()
@@ -203,24 +253,30 @@ class Orchestrator:
             for page in pdf:
                 page.get_pixmap().save(str(self.storage.path(document_id, f"source-{page.number+1}.png")))
 
-    def render(self, document_id, translation_job_id=None):
+    def render(self, document_id, translation_job_id=None, cancel=None):
+        cancel = cancel or CancellationToken()
+        cancel.check()
         self.refresh_geometry(document_id)
+        layout_report={'typography':[], 'vision':{'calls':0,'accepted':0,'reviews':[],'usage':{}}}
         with self.sessions() as session:
             document = session.get(Document, document_id)
             source = self.storage.path(document_id, "source.pdf")
             pages = list(session.scalars(select(Page).where(Page.document_id == document_id).order_by(Page.number)))
             for page in pages:
+                cancel.check()
                 if self.settings.studio_cache_enabled and not page.dirty:
                     continue
                 for issue in session.scalars(select(Issue).where(Issue.document_id == document_id, Issue.page_number == page.number, Issue.stage == "checker")):
                     issue.resolution = "resolved"
                 blocks = [b for b in session.scalars(select(Block).where(Block.document_id == document_id, Block.page_number == page.number)) if not b.style.get("retired")]
                 with fitz.open(source) as pdf:
-                    graphics = [list(image["bbox"]) for image in pdf[page.number-1].get_image_info()]
+                    images = [list(image["bbox"]) for image in pdf[page.number-1].get_image_info()]
+                    graphics = list(images)
                     graphics += [list(drawing["rect"]) for drawing in pdf[page.number-1].get_drawings()]
                 entries = []
                 occupied = [b.bbox for b in blocks] + graphics
                 for block in blocks:
+                    cancel.check()
                     translation = latest(session, block.id, document.target_language, document.script)
                     if translation and translation_job_id and translation.metadata_json.get("job_id")!=translation_job_id:
                         translation=None
@@ -240,18 +296,49 @@ class Orchestrator:
                         session.add(layout)
                     occupied.append(result["bbox"])
                     entries.append((block, translation, layout))
+                CellLayout(self.reorganiser.fonts).apply(entries, blocks, page, images)
+                if self.settings.studio_typography_enabled:
+                    adjusted=TypographyPass(self.reorganiser.fonts,self.settings.studio_typography_min_font_pt,self.settings.studio_typography_max_refits).apply(entries,page)
+                    layout_report['typography'].append({'page':page.number,**adjusted})
                 destination = self.storage.path(document_id, f"page-{page.number}.pdf")
-                Renderer().render_page(source, page.number, entries, destination)
-                for issue in CheckerAgent().run(source, destination, page.number, entries):
+                Renderer(self.reorganiser.fonts).render_page(source, page.number, entries, destination)
+                checked=CheckerAgent().run(source, destination, page.number, entries)
+                cancel.check()
+                if self.vision_reviewer is not None:
+                    was_unavailable=layout_report['vision'].get('unavailable',False)
+                    checked=review_page(self.vision_reviewer,self.settings,source,destination,page,entries,blocks,graphics,checked,self.reorganiser.fonts,layout_report['vision'])
+                    if layout_report['vision'].get('unavailable') and not was_unavailable:
+                        checked.append({'code':'vision_review_unavailable','message':'Optional vision review was unavailable; local rendering and checks were retained.','page_number':page.number,'block_id':None,'stage':'checker','severity':'warning'})
+                for issue in checked:
                     session.add(Issue(document_id=document_id, **issue))
+                if self.settings.studio_typography_enabled:
+                    for block,code,message in diagnostics(entries,self.settings.studio_typography_min_font_pt):
+                        session.add(Issue(document_id=document_id,block_id=block.id,page_number=page.number,code=code,message=message,stage='checker',severity='warning'))
+                cancel.check()
                 page.dirty = False
                 session.commit()
+            cancel.check()
+            interchange=[]
+            for block in session.scalars(select(Block).where(Block.document_id==document_id)):
+                if block.style.get('retired') or not rich(block):
+                    continue
+                translation=latest(session,block.id,document.target_language,document.script)
+                if translation and (not translation_job_id or translation.metadata_json.get('job_id')==translation_job_id):
+                    interchange.append((block,translation))
+            xliff=self.storage.path(document_id,'translation.xlf')
+            if interchange:
+                xliff.write_bytes(export_xliff(interchange,document.target_language))
+            else:
+                xliff.unlink(missing_ok=True)
             active=[b for b in session.scalars(select(Block).where(Block.document_id==document_id)) if not b.style.get("retired")]
             has_rendered=any(latest(session,b.id,document.target_language,document.script) and (l:=session.get(LayoutResult,b.id)) and l.fit_status=="fitted" for b in active)
             kind="final" if has_rendered or not active else "draft"
             if kind=="draft":
                 self.storage.path(document_id,"final.pdf").unlink(missing_ok=True)
             destination = self.storage.path(document_id, kind+".pdf")
+            cancel.check()
             Renderer().assemble(source, {p.number:self.storage.path(document_id,f"page-{p.number}.pdf") for p in pages}, destination)
             session.add(Artifact(document_id=document_id, kind=kind, path=str(destination)))
             session.commit()
+        self.storage.write_json(document_id,'layout-report.json',layout_report)
+        return layout_report

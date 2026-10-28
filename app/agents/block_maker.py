@@ -2,6 +2,7 @@ import re
 from statistics import median
 import pymupdf as fitz
 from collections import Counter
+from app.services.rich_text import source_alignment
 
 
 def inside(span, bbox):
@@ -15,7 +16,7 @@ def span_style(spans):
     for s in spans:
         weights[(s["font"],round(s["size"],2),s["color"],s["flags"])] += max(1,len(s["text"].strip()))
     font,size,color,flags = weights.most_common(1)[0][0]
-    return {"font":font,"size":size,"color":color,"bold":bool(flags & 16),"italic":bool(flags & 2)}
+    return {"font":font,"size":size,"color":color,"bold":bool(flags & 16),"italic":bool(flags & 2),"superscript":bool(flags & 1),"underline":any(s.get('char_flags',0) & 2 for s in spans)}
 
 
 class BlockMakerAgent:
@@ -32,7 +33,7 @@ class BlockMakerAgent:
                         text = span["text"].strip()
                         if not text:
                             continue
-                        box = list(span["bbox"])
+                        box = list(span.get("ink_bbox",span["bbox"]))
                         cell = next((c for c in cells if inside(span,c["bbox"])),None)
                         kind = "paragraph"
                         if cell:
@@ -50,13 +51,19 @@ class BlockMakerAgent:
                         elif span["size"] < body_size * .85 and box[1] > page["height"] * .7:
                             kind = "footnote"
                         style = {
-                            **span_style([span]), "source_regions":[box],
+                            **span_style([span]), "source_regions":[list(span["bbox"])],
+                            "underline_paths":span.get('underline_paths', []),
                             "digital_span":True, "fixed_box":True,
                             "align":"left",
                             "vertical":abs(line["dir"][0]-1)>.01 or abs(line["dir"][1])>.01,
                         }
                         if cell:
                             style.update(table_cell=True,table_cell_bbox=cell["bbox"])
+                        # A single-span line has no inline neighbours whose
+                        # relative positions could be changed by centring it.
+                        if len([s for s in line['spans'] if s['text'].strip()]) == 1:
+                            style['align'] = source_alignment([{'text':text,'bbox':box,
+                                'cell':cell['bbox'] if cell else ()}],style,page)
                         blocks.append({
                             "id":f"{document_id}-p{number}-b{block_index}-l{line_index}-s{span_index}",
                             "document_id":document_id,"page_number":number,
