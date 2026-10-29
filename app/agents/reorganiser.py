@@ -1,6 +1,7 @@
 from app.services.text_fitter import TextFitter, text_direction
 import pymupdf as fitz
 import re
+from app.services.ocr_notation import display_text
 
 
 def contains_signature(block):
@@ -21,13 +22,15 @@ class ReorganiserAgent:
         self.fitter = TextFitter(fonts)
 
     def run(self, block, translation, page, obstacles):
+        if block.style.get('ocr_overlap_with'):
+            return {"bbox":block.bbox,"font":"sans-serif","font_size":block.style['size'],"line_breaks":[],"fit_status":"ocr_overlap_review_required"}
         if contains_signature(block):
             return {"bbox": block.bbox, "font": "sans-serif", "font_size": block.style["size"], "line_breaks": [], "fit_status": "signature_review_required"}
         if block.style.get("unsegmented_table_row"):
             return {"bbox": block.bbox, "font": "sans-serif", "font_size": block.style["size"], "line_breaks": [], "fit_status": "unsegmented_table_row"}
         font = self.fonts.resolve(translation.target_language, translation.script,block.style.get("bold",False))
         unsupported = block.style.get("vertical") or block.style.get("complex_table") or block.style.get("unsupported_ocr")
-        if not self.fonts.supports(translation.text, font, block.style.get("bold", False)):
+        if not self.fonts.supports(display_text(block, translation.text), font, block.style.get("bold", False)):
             font = "missing"
         if font == "missing" or unsupported:
             return {"bbox": block.bbox, "font": font or "sans-serif", "font_size": block.style["size"], "line_breaks": [], "fit_status": "unsupported_glyphs" if font == "missing" else "unsupported_layout"}

@@ -27,7 +27,7 @@ def test_auto_retains_single_span_centring_and_left_aligned_cells(tmp_path):
     left=next(b for b in blocks if b['source_text']=='Left paragraph')
     assert centered.style['align']=='center'
     assert left['style']['align']=='left'
-    assert not centered.style.get('rich_text')
+    assert centered.style.get('rich_text')  # Auto mode allocates complete cell space.
     translation=N(text='Short',target_language='en',script='native',metadata_json={})
     layout=N(**TextFitter().fit(centered,translation.text,400,200,[],None))
     assert layout.bbox==centered.bbox

@@ -1,0 +1,1 @@
+"""DocLayNet rendering evaluation."""

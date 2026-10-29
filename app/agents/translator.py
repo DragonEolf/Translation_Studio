@@ -74,7 +74,28 @@ def restore(text, literals):
     return text
 
 
+def split_passage(text):
+    """Split near the middle without cutting identifiers or OCR math notation."""
+    protected = [(m.start(), m.end()) for m in LITERALS.finditer(text)]
+    protected += [(m.start(), m.end()) for m in re.finditer(
+        r"\$\$[\s\S]*?\$\$|\$[^$\n]*\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]", text)]
+    candidates = [m for m in re.finditer(r"\s+", text)
+                  if text[:m.start()].strip() and text[m.end():].strip()
+                  and not any(m.start() < end and m.end() > start for start, end in protected)]
+    if not candidates:
+        return None
+    # Prefer sentences, clauses, and physical lines when they produce balanced
+    # children. Otherwise use a word boundary; never cut a Unicode word in half.
+    natural = [m for m in candidates if .2*len(text) <= m.start() <= .8*len(text)
+               and ("\n" in m.group() or text[m.start()-1] in ".!?;:।॥")]
+    boundary = min(natural or candidates, key=lambda m: abs((m.start()+m.end())/2-len(text)/2))
+    return text[:boundary.start()], boundary.group(), text[boundary.end():]
+
+
 class TranslatorAgent:
+    MAX_RECOVERY_CALLS = 31
+    MAX_RECOVERY_DEPTH = 5
+
     def __init__(self, provider):
         self.provider = provider
 
@@ -125,6 +146,8 @@ class TranslatorAgent:
                 raise
             body={"truncated":True}
         usage=body.get("usage",{})
+        stats.setdefault("batch_requests", []).append({"input_chars": len(payload),
+            "finish_reason": body.get("finish_reason"), "truncated": bool(body.get("truncated")), "usage": dict(usage)})
         stats["batch_tokens"]=stats.get("batch_tokens",0)+usage.get("total_tokens",0)
         try:
             if body.get("truncated"):
@@ -147,6 +170,8 @@ class TranslatorAgent:
         stats['batch_calls']=stats.get('batch_calls',0)+1
         body=await self.provider.translate(payload,language,script)
         usage=body.get('usage',{})
+        stats.setdefault("batch_requests", []).append({"input_chars": len(payload),
+            "finish_reason": body.get("finish_reason"), "truncated": bool(body.get("truncated")), "usage": dict(usage)})
         stats['batch_tokens']=stats.get('batch_tokens',0)+usage.get('total_tokens',0)
         try:
             if body.get('truncated'):
@@ -162,13 +187,14 @@ class TranslatorAgent:
                 return
             # Last resort preserves style ownership deterministically. Context
             # and word order are weaker, so the pipeline reports a review warning.
-            block=blocks[0];runs=[];fallback_usage=dict(usage)
+            block=blocks[0];runs=[];fallback_usage=dict(usage);run_diagnostics=[]
             try:
                 for run in source_runs(block):
                     if run['text'].strip():
                         if not literal_only(run['text']):
                             stats['individual_calls']=stats.get('individual_calls',0)+1
                         text,metadata=await self.run(SimpleNamespace(source_text=run['text']),language,script)
+                        run_diagnostics.append({"run_id": run['id'], **metadata["translation_diagnostics"]})
                         for key,value in metadata.get('usage',{}).items():
                             if isinstance(value,(int,float)):fallback_usage[key]=fallback_usage.get(key,0)+value
                         leading=' ' if run['text'][:1].isspace() else ''
@@ -184,12 +210,65 @@ class TranslatorAgent:
                 yield block,None,None,exc
                 return
             stats['rich_fallbacks']=stats.get('rich_fallbacks',0)+1
-            yield block,text,{'source_hash':source_hash(block.source_text),'usage':fallback_usage,'rich_text':{'runs':runs,'fallback':True}},None
+            yield block,text,{'source_hash':source_hash(block.source_text),'usage':fallback_usage,'rich_text':{'runs':runs,'fallback':True},'translation_diagnostics':{'runs':run_diagnostics,'splits':sum(d['splits'] for d in run_diagnostics)}},None
             return
         for index,(block,(text,runs)) in enumerate(zip(blocks,parsed)):
             yield block,text,{'source_hash':source_hash(block.source_text),'usage':usage if index==0 else {},'batch_id':nonce,'batch_size':len(blocks),'rich_text':{'runs':runs,'fallback':False}},None
 
     async def run(self, block, language, script):
+        # State belongs to this passage, never the shared agent: concurrent jobs
+        # must not share request budgets or diagnostics.
+        state = {"requests": [], "usage": {}, "splits": 0}
+        try:
+            text, metadata = await self._recover(block, language, script, state, 0)
+        except StudioError as exc:
+            exc.diagnostics = {"requests": state["requests"], "splits": state["splits"], "usage": state["usage"]}
+            if exc.code == "translation_truncated":
+                exc.message = (f"Translation remained incomplete after {len(state['requests'])} requests "
+                               f"and {state['splits']} passage splits; source retained for review.")
+                exc.args = (exc.message,)
+            raise
+        return text, {**metadata, "source_hash": source_hash(block.source_text),
+                      "usage": state["usage"], "translation_diagnostics": {
+                          "requests": state["requests"], "splits": state["splits"]}}
+
+    async def _recover(self, block, language, script, state, depth):
+        try:
+            return await self._run_once(block, language, script, state)
+        except StudioError as exc:
+            if exc.code != "translation_truncated" or depth >= self.MAX_RECOVERY_DEPTH:
+                raise
+            pieces = split_passage(block.source_text)
+            if pieces is None or len(state["requests"]) >= self.MAX_RECOVERY_CALLS:
+                raise
+        left, separator, right = pieces
+        state["splits"] += 1
+        chunks = []
+        for source in (left, right):
+            translated, _ = await self._recover(SimpleNamespace(source_text=source), language, script, state, depth+1)
+            chunks.append(translated.strip())
+        text = validate_literals(block.source_text, separator.join(chunks))
+        return text, {"protected_values": LITERALS.findall(block.source_text)}
+
+    async def _request(self, text, language, script, state):
+        if len(state["requests"]) >= self.MAX_RECOVERY_CALLS:
+            raise StudioError("translation_truncated", "Passage recovery request budget exhausted")
+        diagnostic = {"input_chars": len(text)}
+        state["requests"].append(diagnostic)
+        try:
+            body = await self.provider.translate(text, language, script)
+        except StudioError as exc:
+            diagnostic["error_code"] = exc.code
+            raise
+        diagnostic.update({"finish_reason": body.get("finish_reason"),
+                           "truncated": bool(body.get("truncated")),
+                           "usage": dict(body.get("usage", {}))})
+        for key, value in body.get("usage", {}).items():
+            if isinstance(value, (int, float)):
+                state["usage"][key] = state["usage"].get(key, 0) + value
+        return body
+
+    async def _run_once(self, block, language, script, state):
         provenance = {"source_hash":source_hash(block.source_text)}
         if literal_only(block.source_text):
             metadata={**provenance,"unchanged_literal":True,"usage":{},"protected_values":LITERALS.findall(block.source_text)}
@@ -197,13 +276,13 @@ class TranslatorAgent:
                 metadata['rich_text']={'runs':source_runs(block),'fallback':False}
             return block.source_text,metadata
         protected, literals = protect(block.source_text)
-        body = await self.provider.translate(protected, language, script)
+        body = await self._request(protected, language, script, state)
         if body.get("truncated"):
             raise StudioError("translation_truncated", "Translation was cut off; split or review the block")
         try:
             translated = restore(body["translation"],literals)
         except StudioError:
-            retry = await self.provider.translate(block.source_text,language,script)
+            retry = await self._request(block.source_text,language,script,state)
             if retry.get("truncated"):
                 raise StudioError("translation_truncated","Translation was cut off")
             try:
@@ -217,19 +296,16 @@ class TranslatorAgent:
                     end=match.start() if match else len(block.source_text)
                     prose=block.source_text[position:end]
                     if prose.strip() and re.search(r"\w",prose):
-                        part=await self.provider.translate(prose.strip(),language,script)
+                        part=await self._request(prose.strip(),language,script,state)
                         if part.get("truncated"):
                             raise StudioError("translation_truncated","Literal-preserving translation was cut off")
                         leading=prose[:len(prose)-len(prose.lstrip())]
                         trailing=prose[len(prose.rstrip()):]
                         pieces.append(leading+part["translation"].strip()+trailing)
-                        for key,value in part.get("usage",{}).items():
-                            retry.setdefault("usage",{})[key]=retry.get("usage",{}).get(key,0)+value
                     else:
                         pieces.append(prose)
                     if match:
                         pieces.append(match.group())
                         position=match.end()
                 translated=validate_literals(block.source_text,"".join(pieces))
-            body = {"usage":{key:body.get("usage",{}).get(key,0)+retry.get("usage",{}).get(key,0) for key in {**body.get("usage",{}),**retry.get("usage",{})}}}
         return translated, {**provenance,"usage": body.get("usage", {}), "protected_values": literals}

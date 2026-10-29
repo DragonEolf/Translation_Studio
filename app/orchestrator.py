@@ -1,4 +1,7 @@
 import asyncio
+import json
+from collections import Counter
+from threading import RLock
 import pymupdf as fitz
 from sqlalchemy import select
 from app.models import Document, Page, Block, Translation, LayoutResult, Issue, Job, Artifact
@@ -10,13 +13,27 @@ from app.agents.reorganiser import ReorganiserAgent
 from app.agents.checker import CheckerAgent
 from app.services.renderer import Renderer
 from app.services.cell_layout import CellLayout
+from app.services.paragraph_flow import ParagraphFlow
+from copy import deepcopy
 from app.services.typography import TypographyPass, diagnostics
-from app.services.vision_repair import review_page
 from app.config import StudioError
 from app.services.cancellation import CancellationToken
 from app.services import transliteration as translit
+from app.services.ocr_overlaps import overlap_reviews
 from app.agents.ocr_reader import OCRReaderAgent
-from app.services.rich_text import group_blocks, export_xliff, rich, format_hash, AUTO_PARAGRAPH_MIN_SPANS
+from app.services.rich_text import group_blocks, export_xliff, rich, format_hash, source_runs, AUTO_PARAGRAPH_MIN_SPANS
+
+
+_pdf_lock = RLock()
+
+
+def _pdf_call(func, *args):
+    with _pdf_lock:
+        return func(*args)
+
+
+async def pdf_thread(func, *args):
+    return await asyncio.to_thread(_pdf_call, func, *args)
 
 
 def latest(session, block_id, language=None, script=None):
@@ -37,9 +54,7 @@ class Orchestrator:
         self.sessions, self.storage, self.settings = sessions, storage, settings
         self.translator = TranslatorAgent(provider)
         self.reorganiser = ReorganiserAgent(fonts)
-        self.reasoning = reasoning
         self.ocr_provider = ocr_provider
-        self.vision_reviewer = None
 
     async def run(self, job_id, cancel=None):
         cancel = cancel or CancellationToken()
@@ -61,9 +76,9 @@ class Orchestrator:
                     session.commit()
                 return 'completed'
             if job.operation == "inspect":
-                metadata = await asyncio.to_thread(InspectorAgent().run, source, self.settings.studio_max_pages)
-                extracted = await asyncio.to_thread(TextReaderAgent().run, source)
-                blocks = await asyncio.to_thread(BlockMakerAgent().run, document.id, extracted)
+                metadata = await pdf_thread(InspectorAgent().run, source, self.settings.studio_max_pages)
+                extracted = await pdf_thread(TextReaderAgent().run, source)
+                blocks = await pdf_thread(BlockMakerAgent().run, document.id, extracted)
                 for issue in session.scalars(select(Issue).where(Issue.document_id==document.id,Issue.stage=="ocr")):
                     issue.resolution = "resolved"
                 for item in metadata:
@@ -71,7 +86,7 @@ class Orchestrator:
                     number = item["number"]
                     if item["extraction_method"] == "ocr":
                         reader = OCRReaderAgent()
-                        png, width, height = await asyncio.to_thread(reader.image, source, number, self.settings.studio_ocr_dpi)
+                        png, width, height = await pdf_thread(reader.image, source, number, self.settings.studio_ocr_dpi)
                         cache = self.storage.path(document.id,f"ocr-{number}-{self.settings.studio_ocr_dpi}.json")
                         if self.settings.studio_cache_enabled and cache.exists():
                             import json
@@ -86,8 +101,9 @@ class Orchestrator:
                             session.add(Issue(document_id=document.id,page_number=number,block_id=None,code="ocr_no_text",stage="ocr",message="OCR found no transcribable text; page retained"))
                         blocks.extend(ocr_blocks)
                         item["ocr_usage"] = response.get("usage",{})
-                        session.add(Issue(document_id=document.id,page_number=number,block_id=None,code="ocr_layout_estimated",severity="warning",stage="ocr",message="Scanned font styles are estimated; text regions use white backgrounds. Verify scan and transcription before final use."))
+                        session.add(Issue(document_id=document.id,page_number=number,block_id=None,code="ocr_layout_estimated",severity="warning",stage="ocr",message="Scanned font styles are estimated; text regions use locally estimated paper backgrounds. Verify scan and transcription before final use."))
                     job.progress = .9*number/len(metadata)
+                await pdf_thread(self.source_previews, source, document.id)
                 # Restartable inspection replaces only incomplete extraction state.
                 existing = set(session.scalars(select(Block.id).where(Block.document_id == document.id)))
                 for item in metadata:
@@ -97,6 +113,7 @@ class Orchestrator:
                     elif not self.settings.studio_cache_enabled:
                         stored_page.metadata_json=item
                         stored_page.dirty=True
+                session.flush()  # Persist pages before blocks reference their page keys.
                 for item in blocks:
                     if item["id"] not in existing:
                         session.add(Block(**item))
@@ -110,7 +127,6 @@ class Orchestrator:
                         retired=session.get(Block,identity)
                         retired.style={**retired.style,"retired":True}
                 document.page_count = len(metadata)
-                await asyncio.to_thread(self.source_previews, source, document.id)
                 structured = self.storage.write_json(document.id, "structure.json", {"pages": metadata, "blocks": blocks})
                 session.add(Artifact(document_id=document.id, kind="structure", path=str(structured)))
                 session.commit()
@@ -119,7 +135,7 @@ class Orchestrator:
                 for page in session.scalars(select(Page).where(Page.document_id==document.id)):
                     page.metadata_json={**page.metadata_json,'layout_mode':job.payload.get('layout_mode','spans')}
                 session.commit()
-                await asyncio.to_thread(self.refresh_geometry,document.id)
+                await pdf_thread(self.refresh_geometry,document.id)
                 session.expire_all()
                 changed_target = (document.target_language, document.script) != (job.payload["target_language"], job.payload["script"])
                 if changed_target:
@@ -142,8 +158,14 @@ class Orchestrator:
                             issue.resolution="resolved"
                         if metadata.get('rich_text',{}).get('fallback'):
                             session.add(Issue(document_id=document.id,block_id=block.id,page_number=block.page_number,code='inline_formatting_fallback',stage='translator',severity='warning',message='Inline tags failed validation. Formatted runs were translated separately; review sentence flow.'))
+                        diagnostics = metadata.get("translation_diagnostics", {})
+                        if diagnostics.get("splits"):
+                            stats["recovered_passages"] = stats.get("recovered_passages", 0) + 1
+                            session.add(Issue(document_id=document.id,block_id=block.id,page_number=block.page_number,code="passage_translation_split",stage="translator",severity="warning",message="Incomplete translation recovered by translating smaller passages; review sentence flow and terminology."))
                     else:
                         session.add(Issue(document_id=document.id,block_id=block.id,page_number=block.page_number,code=error.code,stage="translator",message=error.message))
+                        if getattr(error, "diagnostics", None):
+                            stats.setdefault("failed_passages", {})[block.id] = error.diagnostics
                     session.get(Page,f"{document.id}-p{block.page_number}").dirty=True
                     completed+=1
                     job.progress=.7*completed/max(1,len(blocks))
@@ -173,8 +195,10 @@ class Orchestrator:
                             save_result(block,text,metadata,error)
                     finally:
                         await stream.aclose()
+            if job.operation == "translate" and job.payload.get("transliterate"):
+                await self.automatic_transliteration(session, document, job, cancel)
             cancel.check()
-            layout_report = await asyncio.to_thread(self.render, document.id, job.id if job.operation=="translate" and not self.settings.studio_cache_enabled else None, cancel)
+            layout_report = await pdf_thread(self.render, document.id, job.id if job.operation=="translate" and not self.settings.studio_cache_enabled else None, cancel)
             cancel.check()
             with self.sessions() as check:
                 current = [b for b in check.scalars(select(Block).where(Block.document_id==document.id)) if not b.style.get("retired")]
@@ -184,13 +208,44 @@ class Orchestrator:
                 result_job.payload={**result_job.payload,"result":summary,"layout_review_stats":layout_report}
                 check.commit()
                 unresolved_issues = list(check.scalars(select(Issue).where(Issue.document_id == document.id, Issue.resolution != "resolved")))
-                for issue in unresolved_issues:
-                    block = check.get(Block, issue.block_id) if issue.block_id else None
-                    await self.reasoning.solve({"code": issue.code, "message": issue.message}, {"block_id": issue.block_id, "source_text": block.source_text if block else None, "bbox": block.bbox if block else None})
                 unresolved = bool(unresolved_issues)
             if current and not fitted:
                 raise StudioError("reconstruction_failed","No translated blocks could be rendered. The generated PDF is a source-only draft, not a successful translation.",422)
             return "completed_with_issues" if unresolved else "completed"
+
+    async def automatic_transliteration(self, session, document, job, cancel):
+        """Generate all replacements before saving any transliterated revision."""
+        entries = [(b, latest(session, b.id, document.target_language, document.script))
+                   for b in session.scalars(select(Block).where(Block.document_id == document.id))
+                   if not b.style.get('retired')]
+        entries = [(b, t) for b, t in entries if t and (
+            self.settings.studio_cache_enabled or t.metadata_json.get('job_id') == job.id)]
+        words = translit.candidates(entries)
+        replacements = {}
+        stats = {'candidate_words': len(words), 'calls': 0, 'changed_blocks': 0}
+        for index, item in enumerate(words):
+            cancel.check()
+            word = item['word']
+            body = await cancel.wait(self.transliterator.transliterate(
+                translit.pronunciation_input(word), document.target_language))
+            replacements[word] = translit.validate_replacement(body.get('transliteration'))
+            stats['calls'] += 1
+            job.progress = .7 + .1 * (index + 1) / max(1, len(words))
+            job.payload = {**job.payload, 'transliteration_stats': dict(stats)}
+            session.commit()
+        cancel.check()
+        for block, translation in entries:
+            text, metadata = translit.replace(translation, replacements)
+            if text == translation.text:
+                continue
+            previous = latest(session, block.id)
+            session.add(Translation(block_id=block.id, target_language=document.target_language,
+                script=document.script, text=text, revision=previous.revision + 1,
+                metadata_json={**metadata, 'job_id': job.id, 'automatic_transliteration': True}))
+            session.get(Page, f'{document.id}-p{block.page_number}').dirty = True
+            stats['changed_blocks'] += 1
+        job.payload = {**job.payload, 'transliteration_stats': stats}
+        session.commit()
 
     def refresh_geometry(self, document_id):
         """Upgrade digital geometry without discarding text revisions or calling models."""
@@ -222,19 +277,29 @@ class Orchestrator:
                     for key,value in item.items():
                         setattr(block,key,value)
                 else:
-                    session.add(Block(**item))
+                    created = Block(**item)
+                    session.add(created)
                     # Reuse revisions only when an old block describes exactly
                     # this span. Never attach a combined row/paragraph translation
                     # to one of its new child boxes.
+                    single_source = item['style'].get('rich_text', {}).get('source_spans', [])
+                    single_id = single_source[0]['id'] if len(single_source) == 1 else None
                     matching = [b for b in previous_blocks if
                         b.page_number == item["page_number"] and
                         b.source_text == item["source_text"] and
-                        len(b.bbox) == 4 and
-                        all(abs(a-c)<.01 for a,c in zip(b.bbox,item["bbox"]))]
+                        (b.id == single_id or (len(b.bbox) == 4 and
+                        all(abs(a-c)<.01 for a,c in zip(b.bbox,item["bbox"]))))]
                     if len(matching) == 1:
                         for old in session.scalars(select(Translation).where(Translation.block_id==matching[0].id)):
                             if old.metadata_json.get("source_hash",source_hash(matching[0].source_text)) == source_hash(item["source_text"]):
-                                session.add(Translation(block_id=item["id"],target_language=old.target_language,script=old.script,text=old.text,revision=old.revision,metadata_json={**old.metadata_json,"source_hash":source_hash(item["source_text"]),"migrated_from":old.block_id}))
+                                metadata = {**old.metadata_json, "source_hash":source_hash(item["source_text"]), "migrated_from":old.block_id}
+                                # A single source span needs no new sentence context.
+                                # Wrap its retained translation in the known local style.
+                                if single_id and not metadata.get('rich_text'):
+                                    runs = source_runs(created)
+                                    if len(runs) == 1:
+                                        metadata = {**metadata, 'rich_text':{'runs':[{**runs[0], 'text':old.text}], 'fallback':False}, 'format_hash':format_hash(created)}
+                                session.add(Translation(block_id=item["id"],target_language=old.target_language,script=old.script,text=old.text,revision=old.revision,metadata_json=metadata))
                     changed = True
                 if changed:
                     session.get(Page,f"{document_id}-p{item['page_number']}").dirty = True
@@ -257,7 +322,12 @@ class Orchestrator:
         cancel = cancel or CancellationToken()
         cancel.check()
         self.refresh_geometry(document_id)
-        layout_report={'typography':[], 'vision':{'calls':0,'accepted':0,'reviews':[],'usage':{}}}
+        layout_report={'typography':[], 'pages':[]}
+        report_path = self.storage.path(document_id, 'layout-report.json')
+        try:
+            previous_report = json.loads(report_path.read_text())
+        except (OSError, ValueError):
+            previous_report = {}
         with self.sessions() as session:
             document = session.get(Document, document_id)
             source = self.storage.path(document_id, "source.pdf")
@@ -265,10 +335,20 @@ class Orchestrator:
             for page in pages:
                 cancel.check()
                 if self.settings.studio_cache_enabled and not page.dirty:
+                    cached = next((p for p in previous_report.get('pages', []) if p['page'] == page.number), None)
+                    if cached:
+                        layout_report['pages'].append({**cached, 'cached':True})
                     continue
                 for issue in session.scalars(select(Issue).where(Issue.document_id == document_id, Issue.page_number == page.number, Issue.stage == "checker")):
                     issue.resolution = "resolved"
                 blocks = [b for b in session.scalars(select(Block).where(Block.document_id == document_id, Block.page_number == page.number)) if not b.style.get("retired")]
+                overlap_flags = overlap_reviews(blocks)
+                for block in blocks:
+                    style = {k:v for k,v in block.style.items() if k != 'ocr_overlap_with'}
+                    if block.id in overlap_flags:
+                        style['ocr_overlap_with'] = overlap_flags[block.id]
+                    if style != block.style:
+                        block.style = style
                 with fitz.open(source) as pdf:
                     images = [list(image["bbox"]) for image in pdf[page.number-1].get_image_info()]
                     graphics = list(images)
@@ -284,7 +364,6 @@ class Orchestrator:
                         stale=session.get(LayoutResult,block.id)
                         if stale:
                             session.delete(stale)
-                        session.add(Issue(document_id=document_id, block_id=block.id, page_number=page.number, code="missing_translation", stage="checker", message="Source text retained because no translation is available"))
                         continue
                     result = self.reorganiser.run(block, translation, page, [r for r in occupied if r != block.bbox])
                     layout = session.get(LayoutResult, block.id)
@@ -296,24 +375,85 @@ class Orchestrator:
                         session.add(layout)
                     occupied.append(result["bbox"])
                     entries.append((block, translation, layout))
-                CellLayout(self.reorganiser.fonts).apply(entries, blocks, page, images)
-                if self.settings.studio_typography_enabled:
-                    adjusted=TypographyPass(self.reorganiser.fonts,self.settings.studio_typography_min_font_pt,self.settings.studio_typography_max_refits).apply(entries,page)
-                    layout_report['typography'].append({'page':page.number,**adjusted})
                 destination = self.storage.path(document_id, f"page-{page.number}.pdf")
-                Renderer(self.reorganiser.fonts).render_page(source, page.number, entries, destination)
-                checked=CheckerAgent().run(source, destination, page.number, entries)
+                renderer = Renderer(self.reorganiser.fonts)
+                checker = CheckerAgent()
+                renderer.render_page(source, page.number, entries, destination)
+                def review_layout():
+                    issues = checker.run(source, destination, page.number, entries)
+                    translated_ids = {b.id for b, _, _ in entries}
+                    issues.extend({'block_id':b.id, 'page_number':page.number,
+                        'code':'missing_translation', 'stage':'checker', 'severity':'error',
+                        'message':'Source text retained because no translation is available'}
+                        for b in blocks if b.id not in translated_ids)
+                    if self.settings.studio_typography_enabled:
+                        issues.extend({'block_id':b.id, 'page_number':page.number, 'code':code,
+                            'message':message, 'stage':'checker', 'severity':'warning'}
+                            for b, code, message in diagnostics(entries, self.settings.studio_typography_min_font_pt))
+                    return issues
+                before = review_layout()
+                snapshots = {b.id: {key: deepcopy(getattr(l, key)) for key in
+                    ('bbox', 'font', 'font_size', 'line_breaks', 'fit_status')} for b, _, l in entries}
+                cell_changes = CellLayout(self.reorganiser.fonts, self.settings.studio_typography_min_font_pt).apply(entries, blocks, page, images)
+                paragraph_changes = ParagraphFlow(self.reorganiser.fonts, self.settings.studio_typography_min_font_pt).apply(entries, blocks, page, graphics)
+                adjusted = {'changed_blocks': [], 'refits': 0}
+                if self.settings.studio_typography_enabled:
+                    adjusted = TypographyPass(self.reorganiser.fonts,self.settings.studio_typography_min_font_pt,self.settings.studio_typography_max_refits).apply(entries,page)
+                changes = cell_changes + paragraph_changes + adjusted['changed_blocks']
+                checked = before
+                accepted = False
+                if changes:
+                    renderer.render_page(source, page.number, entries, destination)
+                    candidate_issues = review_layout()
+                    # Reject any newly introduced per-block error, even if another
+                    # region improved. Previously fitted translations must survive.
+                    prior_errors = {(i['block_id'], i['code']) for i in before if i['severity'] == 'error'}
+                    new_errors = {(i['block_id'], i['code']) for i in candidate_issues if i['severity'] == 'error'}
+                    retained = all(l.fit_status == 'fitted' for b, _, l in entries
+                                   if snapshots[b.id]['fit_status'] == 'fitted')
+                    accepted = new_errors <= prior_errors and retained
+                    if accepted:
+                        checked = candidate_issues
+                    else:
+                        for block, _, layout in entries:
+                            for key, value in snapshots[block.id].items():
+                                setattr(layout, key, value)
+                        renderer.render_page(source, page.number, entries, destination)
+                layout_report['typography'].append({'page':page.number, **adjusted, 'accepted':accepted})
+                failed_ids = {i['block_id'] for i in checked if i['code'] in {'missing_text', 'clipping', 'collision'}}
+                block_outcomes = []
+                for block, translation, layout in entries:
+                    reason = None
+                    if layout.fit_status == 'overflow':
+                        reason = 'insufficient_cell_height' if block.style.get('table_cell_bbox') else 'minimum_font_reached'
+                    elif layout.fit_status == 'unsupported_glyphs':
+                        path = self.reorganiser.fonts.resolve(translation.target_language, translation.script, block.style.get('bold', False))
+                        reason = 'unavailable_font' if path == 'missing' else 'missing_glyph'
+                    elif block.id in failed_ids:
+                        reason = 'rendering_mismatch'
+                    elif layout.fit_status != 'fitted':
+                        reason = layout.fit_status
+                    block_outcomes.append({'block_id':block.id, 'translation_id':translation.id,
+                        'translation_hash':source_hash(translation.text),
+                        'translation_retained':layout.fit_status == 'fitted' and block.id not in failed_ids,
+                        'fit_status':layout.fit_status, 'failure_reason':reason,
+                        'font_size':layout.font_size, 'bbox':layout.bbox,
+                        'available_height':layout.bbox[3]-layout.bbox[1],
+                        'source_line_count':len(block.source_text.splitlines()),
+                        'before':snapshots[block.id]})
+                included = {b.id for b, _, _ in entries}
+                block_outcomes.extend({'block_id':b.id, 'translation_id':None,
+                    'translation_retained':False, 'failure_reason':'missing_translation'}
+                    for b in blocks if b.id not in included)
+                layout_report['pages'].append({'page':page.number,
+                    'cell_changes':cell_changes, 'paragraph_changes':paragraph_changes,
+                    'change_accepted':accepted, 'issues_before':len(before), 'issues_after':len(checked),
+                    'issues_reduced':len(checked) < len(before),
+                    'issue_counts_before':dict(Counter(i['code'] for i in before)),
+                    'issue_counts_after':dict(Counter(i['code'] for i in checked)), 'blocks':block_outcomes})
                 cancel.check()
-                if self.vision_reviewer is not None:
-                    was_unavailable=layout_report['vision'].get('unavailable',False)
-                    checked=review_page(self.vision_reviewer,self.settings,source,destination,page,entries,blocks,graphics,checked,self.reorganiser.fonts,layout_report['vision'])
-                    if layout_report['vision'].get('unavailable') and not was_unavailable:
-                        checked.append({'code':'vision_review_unavailable','message':'Optional vision review was unavailable; local rendering and checks were retained.','page_number':page.number,'block_id':None,'stage':'checker','severity':'warning'})
                 for issue in checked:
                     session.add(Issue(document_id=document_id, **issue))
-                if self.settings.studio_typography_enabled:
-                    for block,code,message in diagnostics(entries,self.settings.studio_typography_min_font_pt):
-                        session.add(Issue(document_id=document_id,block_id=block.id,page_number=page.number,code=code,message=message,stage='checker',severity='warning'))
                 cancel.check()
                 page.dirty = False
                 session.commit()

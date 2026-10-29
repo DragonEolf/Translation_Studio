@@ -6,8 +6,9 @@ from app.services.text_fitter import rich_markup, text_direction
 
 
 class CellLayout:
-    def __init__(self, fonts):
+    def __init__(self, fonts, min_size=6):
         self.fonts = fonts
+        self.min_size = min_size
 
     def apply(self, entries, blocks, page, images=()):
         """Pool cell space and apply one scale to the original font sizes.
@@ -30,7 +31,7 @@ class CellLayout:
             current = []
             for block in members:
                 entry = available.get(block.id)
-                eligible = entry and entry[2].fit_status == 'fitted' and block.style.get('rich_text') and getattr(entry[1], 'metadata_json', {}).get('rich_text', {}).get('runs')
+                eligible = entry and entry[2].fit_status in {'fitted', 'overflow'} and block.style.get('rich_text') and getattr(entry[1], 'metadata_json', {}).get('rich_text', {}).get('runs')
                 if not eligible:
                     if current:
                         groups.append(current)
@@ -46,7 +47,7 @@ class CellLayout:
             if current:
                 groups.append(current)
             for group in groups:
-                if len(group) < 2:
+                if len(group) < 2 and group[0][2].fit_status != "overflow":
                     continue
                 identities = {b.id for b, _, _ in group}
                 bounds = fitz.Rect(cell) & fitz.Rect(0, 0, page.width, page.height)
@@ -79,6 +80,8 @@ class CellLayout:
                 for (block, translation, layout), height in zip(group, heights):
                     layout.bbox = [bounds.x0, cursor, bounds.x1, cursor + height]
                     layout.font_size = float(block.style['size']) * scale
+                    layout.fit_status = "fitted"
+                    layout.line_breaks = translation.text.splitlines()
                     cursor += height + gap
                     changed.append(block.id)
         return changed
@@ -105,9 +108,18 @@ class CellLayout:
         return heights, gap
 
     def _fit(self, group, bounds):
-        low = 0.
+        # Enforce a readable floor across all body runs in the cell.
+        from app.services.layout_tools import minimum_body_size
+        low = max(min(self.min_size, float(b.style["size"])) /
+                  max(.01, minimum_body_size(b, t, float(b.style["size"])))
+                  for b, t, _ in group)
+        if low > 1:
+            return None
+        measured = self._measure(group, bounds, low)
+        if measured is None:
+            return None
         high = 1.
-        best = None
+        best = (low, *measured)
         for attempt in range(16):
             size = high if attempt == 0 else (low + high) / 2
             measured = self._measure(group, bounds, size)

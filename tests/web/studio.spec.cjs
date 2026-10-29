@@ -6,7 +6,7 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 const web = path.resolve(__dirname, '../../app/web');
 const output = path.resolve(__dirname, '../../output/ui-verification');
-const health = {supported_languages:['en','hi','ta','ur'],available_font_languages:['en','hi','ta','ur'],max_upload_mb:25,max_pages:100,translation_configured:true,ocr_configured:true};
+const health = {transliteration_configured:true,supported_languages:['en','hi','ta','ur'],available_font_languages:['en','hi','ta','ur'],max_upload_mb:25,max_pages:100,translation_configured:true,ocr_configured:true};
 let browser;
 async function setup(scenario = {}) {
   const context = await browser.newContext();
@@ -18,7 +18,7 @@ async function setup(scenario = {}) {
     const json = (body, status = 200) => route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});
     if (pathname === '/' || pathname.startsWith('/assets/')) {
       const file = pathname === '/' ? 'index.html' : path.basename(pathname);
-      return route.fulfill({contentType:file.endsWith('.html')?'text/html':file.endsWith('.css')?'text/css':'application/javascript',body:await fs.readFile(path.join(web,file),'utf8')});
+      return route.fulfill({contentType:file.endsWith('.html')?'text/html':file.endsWith('.css')?'text/css':file.endsWith('.png')?'image/png':'application/javascript',body:await fs.readFile(path.join(web,file))});
     }
     if (pathname === '/v1/health') return state.healthDown ? route.abort() : json({...health,...state.health});
     if (pathname === '/v1/documents' && route.request().method() === 'POST') {
@@ -73,6 +73,9 @@ async function test(name, scenario, fn) {
   browser = await chromium.launch({headless:true});
   await test('initial view, native names, responsive layout',{},async ({page}) => {
     assert.match(await page.locator('#language').innerText(),/தமிழ்/);
+    await page.locator('.iitm-logo').evaluate(img => img.decode());
+    assert.equal(await page.locator('.iitm-logo').evaluate(img => img.naturalWidth > 0),true);
+    assert.match(await page.locator('.maker-credit').innerText(),/Krishna Karthikeyan/);
     assert.equal(await page.locator('input[value="auto"]').isChecked(),true);
     assert.equal(await page.locator('#submit').isDisabled(),true);
     await page.screenshot({path:path.join(output,'desktop.png'),fullPage:true});
@@ -82,6 +85,14 @@ async function test(name, scenario, fn) {
     }
     await page.setViewportSize({width:390,height:1000});
     await page.screenshot({path:path.join(output,'mobile.png'),fullPage:true});
+  });
+  await test('initial transliteration option follows language and reaches request',{},async ({page,state}) => {
+    await page.locator('#language').selectOption('en');
+    assert.equal(await page.locator('#auto-transliterate').isDisabled(),true);
+    await page.locator('#language').selectOption('ta');
+    await page.locator('#auto-transliterate').check();
+    await start(page); await completed(page);
+    assert.equal(state.payload.transliterate,true);
   });
   await test('reject wrong type and empty PDF before upload',{},async ({page,state}) => {
     await page.locator('#pdf-file').setInputFiles({...file,name:'notes.txt'});
@@ -202,9 +213,8 @@ async function test(name, scenario, fn) {
     await page.locator('#apply-transliteration').waitFor({state:'visible'});
     assert.equal(state.previewPayload.request_id,state.originalPreviewId);
   });
-  await test('external vision review is disclosed',{health:{vision_review_enabled:true}},async ({page}) => {
-    assert.equal(await page.locator('#vision-note').isVisible(),true);
-    assert.match(await page.locator('#vision-note').innerText(),/source and output crops/);
+  await test('legacy repair status has no UI controls',{health:{vision_review_enabled:true}},async ({page}) => {
+    assert.equal(await page.locator('#vision-note').count(),0);
   });
   await test('missing fonts are explained',{health:{available_font_languages:['en']}},async ({page}) => {
     assert.match(await page.locator('#font-note').innerText(),/font is not installed/);

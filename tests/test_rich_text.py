@@ -150,7 +150,7 @@ def test_paragraph_pipeline_render_xliff_and_switch_back(tmp_path,cache_enabled)
   assert edited.status_code==422
   job=wait(client,client.post(f'/v1/documents/{doc}/translations',json={'target_language':'en','layout_mode':'spans'}))
   assert job['status'] in {'completed','completed_with_issues'},job
-  assert all(i['code']=='collision' for i in client.get(f'/v1/documents/{doc}/issues',params={'resolution':'manual_review_required'}).json())
+  assert all(i['code'] in {'collision','source_geometry_overlap'} for i in client.get(f'/v1/documents/{doc}/issues',params={'resolution':'manual_review_required'}).json())
   assert len(client.get(f'/v1/documents/{doc}/blocks').json())==4
   assert client.get(f'/v1/documents/{doc}/artifacts/translation.xlf').status_code==404
   repeated=wait(client,client.post(f'/v1/documents/{doc}/translations',json={'target_language':'en','layout_mode':'paragraphs'}))

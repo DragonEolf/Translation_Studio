@@ -11,7 +11,7 @@
 </head>
 <body>
   <a class="skip-link" href="#translate-form">Skip to translator</a>
-  <header><a class="brand" href="/" aria-label="Translation Studio home"><span class="brand-icon" aria-hidden="true">文</span> Translation Studio</a><span class="header-note">Made for multilingual documents</span></header>
+  <header><a class="brand" href="/" aria-label="Translation Studio home"><img class="iitm-logo" src="/assets/iitm-logo.png" width="52" height="52" alt="IIT Madras"><span>Translation Studio<small>Indian Institute of Technology Madras</small></span></a><span class="header-note">Made by Krishna Karthikeyan</span></header>
   <main>
     <div class="intro"><p class="eyebrow">Across languages. On the same page.</p><h1>Same document.<br>A new language.</h1><p>Translate your PDF into an Indic language or English.<br class="desktop-break"> Keep the structure, images, and details that matter.</p></div>
     <section class="workspace" aria-label="PDF translator">
@@ -35,9 +35,9 @@
           </div>
           <p id="layout-help" class="field-hint">Paragraph reflow is experimental; dense pages can still need smaller text or review.</p>
         </fieldset>
+        <label class="transliteration-option" for="auto-transliterate"><input id="auto-transliterate" type="checkbox"><span><strong>Transliterate remaining English</strong><small>After translation, pronounce remaining English words and abbreviations in the selected script. Bodhan applies them before preparing your PDF.</small></span></label>
         <button id="submit" type="submit" disabled><span id="submit-label">Translate PDF</span><span aria-hidden="true">→</span></button>
         <p class="account-note">Text is sent to your configured Bodhan service; scanned pages are sent as images for OCR. Usage charges may apply.</p>
-        <p id="vision-note" class="account-note" hidden>Optional vision review is enabled: source and output crops of flagged regions are also sent to the configured vision provider for layout repair.</p>
       </form>
       <section id="result" class="result" aria-labelledby="status-title" hidden>
         <div class="result-heading"><span class="status-dot" aria-hidden="true"></span><h2 id="status-title" tabindex="-1">Preparing your document</h2></div>
@@ -62,6 +62,7 @@
       </section>
     </section>
     <p class="footer-note">Your original stays unchanged. Complex tables, diagrams, and scans may need a visual check.</p>
+    <p class="maker-credit">Made by <strong>Krishna Karthikeyan</strong></p>
     <noscript><p class="notice">Enable JavaScript to upload and translate PDFs.</p></noscript>
   </main>
 </body>

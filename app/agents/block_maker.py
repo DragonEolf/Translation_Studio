@@ -16,7 +16,7 @@ def span_style(spans):
     for s in spans:
         weights[(s["font"],round(s["size"],2),s["color"],s["flags"])] += max(1,len(s["text"].strip()))
     font,size,color,flags = weights.most_common(1)[0][0]
-    return {"font":font,"size":size,"color":color,"bold":bool(flags & 16),"italic":bool(flags & 2),"superscript":bool(flags & 1),"underline":any(s.get('char_flags',0) & 2 for s in spans)}
+    return {"font":font,"size":size,"color":color,"bold":bool(flags & 16) or bool(re.search(r"(?:^|[-_,])(?:Bold|SemiBold|Demi|Heavy|Black)(?:Italic|Oblique|Cond|Cn|MT|PS|$)",font,re.I)),"italic":bool(flags & 2),"superscript":bool(flags & 1),"underline":any(s.get('char_flags',0) & 2 for s in spans)}
 
 
 class BlockMakerAgent:

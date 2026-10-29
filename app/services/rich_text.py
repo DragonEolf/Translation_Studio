@@ -67,6 +67,17 @@ def group_blocks(blocks, pages, min_spans=1):
             for li, line in enumerate(b['lines']):
                 for si, span in enumerate(line['spans']):
                     raw_text[(pn, bi, li, si)] = span['text']
+    def span_text(pn, bi, li, si, block, previous=None):
+        text = raw_text.get((pn, bi, li, si), block['source_text'])
+        if previous is not None and previous < si:
+            skipped = [raw_text.get((pn, bi, li, index), '')
+                       for index in range(previous + 1, si)]
+            # Extraction intentionally omits whitespace-only blocks. Recover
+            # their exact separators without inventing spaces at style splits.
+            if skipped and all(not part.strip() for part in skipped):
+                text = ''.join(skipped) + text
+        return text
+
     by_block = defaultdict(list)
     untouched = []
     for block in blocks:
@@ -98,7 +109,8 @@ def group_blocks(blocks, pages, min_spans=1):
             for _, b in spans[1:]:
                 box |= fitz.Rect(b['bbox'])
             size = median(b['style']['size'] for _, b in spans)
-            text = ''.join(raw_text.get((pn, bi, li, si), b['source_text']) for si, b in spans)
+            text = ''.join(span_text(pn, bi, li, si, b, spans[index-1][0] if index else None)
+                           for index, (si, b) in enumerate(spans))
             item = dict(line=li, cell=cell, spans=spans, bbox=list(box), size=size, text=text)
             prev = chunks[-1][-1] if chunks else None
             same_paragraph = prev and li == prev['line'] + 1 and cell == prev['cell'] and abs(size-prev['size']) < .5 and abs(box.x0-prev['bbox'][0]) < max(8, size) and box.y0 > prev['bbox'][1]+size*.6 and -size*.35 <= box.y0-prev['bbox'][3] <= size*.8
@@ -110,7 +122,7 @@ def group_blocks(blocks, pages, min_spans=1):
                 chunks.append([item])
         for gi, chunk in enumerate(chunks):
             members = [b for line in chunk for _, b in line['spans']]
-            if len(members) < min_spans:
+            if len(members) < min_spans and not any(b["style"].get("table_cell") for b in members):
                 untouched.extend(members)
                 continue
             weights = Counter()
@@ -121,13 +133,14 @@ def group_blocks(blocks, pages, min_spans=1):
             definitions = {}
             runs = []
             for line_index, line in enumerate(chunk):
-                for si, b in line['spans']:
+                for span_index, (si, b) in enumerate(line['spans']):
                     key = style_key(b['style'])
                     sid = next((sid for sid, st in definitions.items() if style_key(st) == key), None)
                     if sid is None:
                         sid = f'f{len(definitions)}'
                         definitions[sid] = {k: b['style'][k] for k in ('font','size','color','bold','italic','superscript','underline')}
-                    text = raw_text.get((pn, bi, line['line'], si), b['source_text'])
+                    previous = line['spans'][span_index-1][0] if span_index else None
+                    text = span_text(pn, bi, line['line'], si, b, previous)
                     if runs and runs[-1]['style_id'] == sid:
                         runs[-1]['text'] += text
                         runs[-1]['source_ids'].append(b['id'])

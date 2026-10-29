@@ -39,7 +39,7 @@ class WaitingProvider:
 
 def test_cancel_interrupts_api_and_worker_can_process_next_job(tmp_path):
     provider=WaitingProvider()
-    app=create_app(Settings(_env_file=None,studio_data_dir=tmp_path),provider=provider)
+    app=create_app(Settings(_env_file=None,studio_data_dir=tmp_path,studio_workers=1),provider=provider)
     with fitz.open() as pdf:
         for _ in range(2):
             pdf.new_page().insert_text((40,70),'Hello world')

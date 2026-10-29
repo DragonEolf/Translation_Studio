@@ -33,6 +33,7 @@ function setBusy(value) {
   $("pdf-file").disabled = locked;
   $("language").disabled = locked || !limits;
   $("layout-options").disabled = locked;
+  $("auto-transliterate").disabled = locked || $("language").value === "en" || limits?.transliteration_configured === false;
   $("submit").disabled = locked || !limits || limits.translation_configured === false || !$("pdf-file").files.length || !$("file-error").hidden;
   $("submit-label").textContent = value ? "Working on your PDF…" : active ? "Translation in progress" : "Translate PDF";
   $("translate-form").setAttribute("aria-busy", String(value));
@@ -53,6 +54,8 @@ function layoutHelp() {
   }[document.querySelector('input[name="layout_mode"]:checked').value];
 }
 function fontNote() {
+  if ($("language").value === "en") $("auto-transliterate").checked = false;
+  $("auto-transliterate").disabled = busy || Boolean(active) || $("language").value === "en" || limits?.transliteration_configured === false;
   const missing = limits?.available_font_languages && !limits.available_font_languages.includes($("language").value);
   $("font-note").hidden = !missing;
   $("font-note").textContent = missing ? "This language’s font is not installed. Some text may stay in the source language; install its font before translating." : "";
@@ -126,13 +129,17 @@ async function sourceNote() {
   $("document-note").hidden = false;
 }
 const issueGroups = [
-  {codes:["vision_review_unavailable"], text:"Optional vision review was unavailable. This PDF uses the local rendering and checks; review flagged regions yourself."},
+  {codes:["translation_truncated"], text:"Some translations remained incomplete after automatic recovery. Affected regions keep their source text and need review."},
+  {codes:["passage_translation_split"], text:"Some translations were recovered using smaller passages. Review sentence flow and terminology."},
+  {codes:["source_geometry_overlap"], text:"Some original text regions have overlapping boxes. Review these regions for visible overlap."},
   {codes:["small_text","font_size_inconsistent"], text:"Some text remains small or has uneven sizing after local consistency checks. Review these regions at reading size."},
   {codes:["unsupported_glyphs"], text:"Some characters could not be rendered with the installed fonts. Affected regions keep their source text."},
   {codes:["overflow","collision","clipping"], text:"Some text may be cramped, overlap, or exceed its available space. Check dense sections and tables."},
   {codes:["protected_value_changed","missing_translation"], text:"Some regions could not be translated safely and remain in the source language."},
   {codes:["inline_formatting_fallback"], text:"Some formatted passages were translated in smaller pieces. Check their formatting and sentence flow."},
   {codes:["ocr_layout_estimated","ocr_low_confidence","ocr_no_text"], text:"Scanned-page text or formatting is estimated. Check the transcription, spacing, and backgrounds."},
+  {codes:["unsupported_ocr_notation"], text:"Some mathematical symbols could not be displayed correctly. Review the marked expressions."},
+  {codes:["ocr_overlap_review_required"], text:"An overlapping OCR expression may have been misread or detected twice. Review it against the original scan."},
   {codes:["complex_table","unsupported_layout","unsegmented_table_row","signature_review_required"], text:"Complex layouts, tables, or signature regions may have been kept as they were."},
   {codes:["graphics_changed","page_dimensions_changed","missing_text"], text:"A rendering check found a possible change to content or graphics. Compare the output with your original."}
 ];
@@ -231,7 +238,7 @@ async function runActive() {
       const doc = await request(`/v1/documents/${active.documentId}`);
       let translated = doc.latest_job?.operation === "translate" ? {job_id:doc.latest_job.id} : null;
       if (!translated) {
-        try { translated = await request(`/v1/documents/${active.documentId}/translations`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target_language:active.language,script:"native",layout_mode:active.layout})}); }
+        try { translated = await request(`/v1/documents/${active.documentId}/translations`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target_language:active.language,script:"native",layout_mode:active.layout,transliterate:Boolean(active.transliterate)})}); }
         catch (error) {
           if (error.code !== "document_busy") throw error;
           const current = await request(`/v1/documents/${active.documentId}`);
@@ -343,7 +350,7 @@ $("translate-form").addEventListener("submit", async event => {
     $("status-title").focus();
     const data = new FormData(); data.append("file",file);
     const upload = await request("/v1/documents", {method:"POST",body:data});
-    active = {documentId:upload.document_id,jobId:upload.job_id,phase:"inspect",language,layout}; saveActive();
+    active = {documentId:upload.document_id,jobId:upload.job_id,phase:"inspect",language,layout,transliterate:$("auto-transliterate").checked}; saveActive();
   } catch (error) { showFailure(error); }
   finally { setBusy(false); }
   if (active) await runActive();
@@ -373,7 +380,6 @@ async function connect() {
   $("reconnect").disabled = true;
   try {
     limits = await request("/v1/health");
-    $("vision-note").hidden = !limits.vision_review_enabled;
     $("language").replaceChildren();
     for (const code of [...limits.supported_languages].sort((a,b) => (names[a] || a).localeCompare(names[b] || b))) {
       const option = document.createElement("option"); option.value = code;

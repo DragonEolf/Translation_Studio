@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 from app.config import Settings, StudioError
 from app.main import create_app
 from app.providers.bodhan import BodhanProvider, validate_target
+from app.providers.legacy_settings import LegacyRepairSettings
+from app.providers.reasoning import OpenRouterReasoningProvider
 from app.agents.translator import protect, restore
 
 
@@ -39,7 +41,7 @@ def wait(client, response):
 
 def test_end_to_end(tmp_path):
     provider = FakeProvider()
-    app = create_app(Settings(studio_data_dir=tmp_path,studio_cache_enabled=True), provider)
+    app = create_app(Settings(_env_file=None, studio_data_dir=tmp_path,studio_cache_enabled=True), provider)
     with TestClient(app) as client:
         response = client.post("/v1/documents",files={"file":("input.pdf",pdf_bytes(),"application/pdf")})
         doc = response.json()["document_id"]
@@ -58,7 +60,7 @@ def test_end_to_end(tmp_path):
         assert job["status"] == "completed", job
         assert (tmp_path/doc/"page-2.pdf").stat().st_mtime_ns == untouched
         assert client.get(f"/v1/documents/{doc}/blocks").json()[0]["translation"]["revision"] == 2
-        assert client.post(f"/v1/blocks/{block['id']}/revise",json={"instruction":"Improve it"}).json()["error"]["code"] == "reasoning_provider_not_configured"
+        assert client.post(f"/v1/blocks/{block['id']}/revise",json={"instruction":"Improve it"}).json()["error"]["code"] == "reasoning_disabled"
         assert wait(client,client.post(f"/v1/documents/{doc}/translations",json={"target_language":"en"}))["status"] == "completed"
         assert provider.calls == 2
 
@@ -102,6 +104,36 @@ async def test_bodhan_retry_and_truncation():
     assert json.loads(calls[0].content) == {"model":"indic-translate","messages":[{"role":"user","content":"hello"}],"target_language_code":"en","target_script":"native"}
     assert result["translation"] == "hello"
     assert result["usage"] == {"total_tokens":4}
+
+
+async def test_reasoning_provider_revises_text_only():
+    def handler(request):
+        import json
+        body = json.loads(request.content)
+        assert request.headers["Authorization"] == "Bearer secret"
+        assert body["temperature"] == 0
+        assert body["messages"][0]["role"] == "system"
+        return httpx.Response(200, json={"choices": [{"message": {"content": "Improved translation"}, "finish_reason": "stop"}]})
+
+    provider = OpenRouterReasoningProvider(LegacyRepairSettings(_env_file=None, openrouter_api_key="secret"), httpx.MockTransport(handler))
+    result = await provider.revise("Make it clearer", {"block": {"source_text": "Hello"}, "translation": {"text": "Existing", "target_language": "hi", "script": "native"}})
+    assert result == "Improved translation"
+
+
+async def test_reasoning_provider_resolves_one_issue_region():
+    def handler(request):
+        import json
+        body = json.loads(request.content)
+        assert body["response_format"] == {"type": "json_object"}
+        user = json.loads(body["messages"][1]["content"])
+        assert user["region"]["block_id"] == "b1"
+        assert "other region" not in json.dumps(user)
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"action": "replace_text", "text": "Corrected", "reason": "Removed duplicate"})}, "finish_reason": "stop"}]})
+
+    provider = OpenRouterReasoningProvider(LegacyRepairSettings(_env_file=None, openrouter_api_key="secret"), httpx.MockTransport(handler))
+    result = await provider.solve({"code": "collision", "message": "overlap"}, {"issues": [{"code": "collision", "message": "overlap"}], "block": {"id": "b1", "source_text": "Hello", "bbox": [0, 0, 10, 10]}, "translation": {"text": "Wrong", "target_language": "hi", "script": "native"}})
+    assert result["status"] == "replace_text"
+    assert result["text"] == "Corrected"
 
 
 @pytest.mark.parametrize("body",[{}, {"choices":[]}, {"choices":[{"message":{"content":""},"finish_reason":"stop"}]}, {"choices":[{"message":{"content":"blocked"},"finish_reason":"content_filter"}]}])

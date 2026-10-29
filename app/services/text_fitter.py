@@ -3,6 +3,7 @@ import hashlib
 from functools import lru_cache
 from pathlib import Path
 import pymupdf as fitz
+from app.services.ocr_notation import display_text
 
 SCRIPT_FONTS = {
     "hi": "Devanagari", "mr": "Devanagari", "ne": "Devanagari", "sa": "Devanagari", "mai": "Devanagari", "doi": "Devanagari", "brx": "Devanagari", "kok": "Devanagari", "ks-Deva": "Devanagari", "sd": "Devanagari",
@@ -164,23 +165,44 @@ class TextFitter:
         self.fonts = fonts
 
     def fit(self, block, text, width, height, obstacles, font_path, rich_runs=None, rich_fonts=None, direction="ltr"):
+        text = display_text(block, text)
+        if rich_runs is not None:
+            rich_runs = [{**run, 'text':display_text(block, run['text'])} for run in rich_runs]
         source = fitz.Rect(block.bbox)
         original = float(block.style["size"])
         def content_at(size):
             if rich_runs is not None:
                 return rich_markup(rich_runs,size,original,rich_fonts or {},block.style.get("align","left"),direction=direction,registry=self.fonts)
             return markup(text,size,block.style["color"],font_path,block.style.get("bold",False),block.style.get("align","left"),block.style.get("italic",False),preserve_breaks=block.style.get("ocr",False),underline=block.style.get("underline",False),direction=direction,registry=self.fonts)
-        if block.style.get("fixed_box"):
+        if block.style.get("fixed_box") or block.style.get("ocr"):
             # Find the largest fitting size; zero is a search bound, never a
-            # rendered font size. There is no readability floor for fixed spans.
-            low, high, best = 0.0, original, None
-            for attempt in range(16):
-                size = original if attempt == 0 else (low+high)/2
+            # rendered font size. Rich paragraphs and cells retain a 6pt floor.
+            # OCR size is only an upper estimate: paragraph newlines say nothing
+            # about physical handwriting lines. Search down to the existing 8pt
+            # OCR floor rather than 70% of that unreliable estimate.
+            if block.style.get("ocr"):
+                low = min(original, 8.0)
+            elif block.style.get("rich_text") or block.style.get("table_cell"):
+                low = min(original, 6.0)
+            else:
+                low = 0.0
+            high, best = original, None
+            archive = fitz.Archive(str(Path(font_path).parent)) if font_path else None
+            def fits_at(size):
                 with fitz.open() as doc:
                     page = doc.new_page(width=width,height=height)
                     content,css = content_at(size)
-                    spare,_ = page.insert_htmlbox(source,content,css=css,archive=fitz.Archive(str(Path(font_path).parent)) if font_path else None,scale_low=1)
-                if spare >= 0:
+                    spare,_ = page.insert_htmlbox(source,content,css=css,archive=archive,scale_low=1)
+                return spare >= 0
+            if low > 0:
+                # Establish a real fitting lower bound. If it fails, retain the
+                # source instead of silently shrinking text below the floor.
+                if not fits_at(low):
+                    return {"bbox":list(source),"font_size":original,"font":font_path or "sans-serif","line_breaks":[],"fit_status":"overflow"}
+                best = low
+            for attempt in range(16):
+                size = original if attempt == 0 else (low+high)/2
+                if fits_at(size):
                     best = size
                     low = size
                     if attempt == 0:

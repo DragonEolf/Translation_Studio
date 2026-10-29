@@ -15,8 +15,9 @@ test = ["pytest>=8", "pytest-asyncio>=0.24"]
 include = ["app*"]
 
 [tool.setuptools.package-data]
-app = ["web/*.html", "web/*.css", "web/*.js"]
+app = ["web/*.html", "web/*.css", "web/*.js", "web/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 asyncio_mode = "auto"

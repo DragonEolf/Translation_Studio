@@ -10,18 +10,17 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from app.config import Settings, StudioError
 from app.models import database, Document, Page, Block, Translation, Issue, Job, Artifact, LayoutResult, uid
 from app.agents.translator import source_hash
 from app.services.rich_text import rich, format_hash
 from app.orchestrator import Orchestrator, latest
 from app.providers.bodhan import BodhanProvider, validate_target, LANGUAGES, LANGUAGE_NAMES
-from app.providers.reasoning import DisabledReasoningProvider
 from app.providers.ocr import BodhanOCRProvider
 from app.services.storage import Storage
 from app.services.text_fitter import FontRegistry
 from app.services.job_runner import JobRunner
-from app.providers.vision import DeepSeekVisionReviewer
 from app.providers.transliteration import BodhanTransliterationProvider
 from app.services import transliteration as translit
 
@@ -30,6 +29,7 @@ class TranslateRequest(BaseModel):
     target_language: str
     script: str = "native"
     layout_mode: Literal["spans", "paragraphs", "auto"] = "spans"
+    transliterate: bool = False
 
 
 class TransliterationPreviewRequest(BaseModel):
@@ -59,12 +59,11 @@ def create_app(settings=None, provider=None, reasoning=None, ocr_provider=None, 
     storage = Storage(settings.studio_data_dir)
     engine, sessions = database(storage.root / "studio.sqlite3")
     fonts = FontRegistry(settings.studio_font_dir)
-    reasoning = reasoning or DisabledReasoningProvider()
-    vision_reviewer = vision_reviewer or (DeepSeekVisionReviewer(settings) if settings.studio_vision_review_enabled else None)
+    # Legacy injection arguments remain accepted, but external repair is disabled.
+    reasoning = None
     orchestrator = Orchestrator(sessions, storage, settings, provider or BodhanProvider(settings.bodhan_api_key, settings.studio_provider_attempts), fonts, reasoning, ocr_provider or BodhanOCRProvider(settings.bodhan_ocr_api_key or settings.bodhan_api_key, settings.studio_provider_attempts))
     orchestrator.transliterator = transliteration_provider or BodhanTransliterationProvider(settings.bodhan_api_key, settings.studio_provider_attempts)
-    runner = JobRunner(sessions, orchestrator)
-    orchestrator.vision_reviewer = vision_reviewer
+    runner = JobRunner(sessions, orchestrator, settings.studio_workers)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -107,18 +106,22 @@ def create_app(settings=None, provider=None, reasoning=None, ocr_provider=None, 
         job = Job(document_id=document.id, operation=operation, payload=payload or {})
         document.status = "queued"
         session.add(job)
-        if commit:
-            session.commit()
-        else:
+        try:
             session.flush()
+            if commit:
+                session.commit()
+        except IntegrityError as exc:
+            session.rollback()
+            if "jobs.document_id" not in str(exc.orig):
+                raise
+            raise StudioError("document_busy", "A job is already active for this document", 409) from exc
         return {"document_id": document.id, "job_id": job.id, "status": job.status}
 
     @app.get("/v1/health")
     def health():
-        return {"status": "ok", "reasoning_enabled": not isinstance(reasoning, DisabledReasoningProvider), "font_scripts": sorted(fonts.paths), "supported_languages": sorted(LANGUAGES), "max_upload_mb":settings.studio_max_upload_mb, "max_pages":settings.studio_max_pages,
+        return {"status": "ok", "font_scripts": sorted(fonts.paths), "supported_languages": sorted(LANGUAGES), "max_upload_mb":settings.studio_max_upload_mb, "max_pages":settings.studio_max_pages,
                 "transliteration_configured":bool(settings.bodhan_api_key) or transliteration_provider is not None, "translation_configured": bool(settings.bodhan_api_key) or provider is not None,
                 "ocr_configured": bool(settings.bodhan_ocr_api_key or settings.bodhan_api_key) or ocr_provider is not None,
-                "vision_review_enabled": vision_reviewer is not None,
                 "available_font_languages": sorted(language for language in LANGUAGES if fonts.resolve(language, "native") != "missing")}
 
     @app.post("/v1/documents", status_code=202)
@@ -189,6 +192,8 @@ def create_app(settings=None, provider=None, reasoning=None, ocr_provider=None, 
     @app.post("/v1/documents/{document_id}/translations", status_code=202)
     def translate(document_id: str, body: TranslateRequest) -> dict:
         validate_target(body.target_language, body.script)
+        if body.transliterate and (body.target_language == "en" or body.script != "native"):
+            raise StudioError("transliteration_not_applicable", "Automatic transliteration requires a native Indic target script", 422)
         with sessions() as session:
             doc = require(session, Document, document_id)
             if not doc.page_count:
@@ -305,11 +310,7 @@ def create_app(settings=None, provider=None, reasoning=None, ocr_provider=None, 
 
     @app.post("/v1/blocks/{block_id}/revise", status_code=202)
     async def revise(block_id: str, body: ReviseRequest):
-        with sessions() as session:
-            block = require(session, Block, block_id)
-            translation = latest(session, block.id)
-            text = await reasoning.revise(body.instruction, {"block": record(block), "translation": record(translation) if translation else None})
-            return edit(session, block, text)
+        raise StudioError("reasoning_disabled", "Automatic revision is disabled. Edit the translation directly.", 410)
 
     @app.post("/v1/documents/{document_id}/render", status_code=202)
     def render(document_id: str):

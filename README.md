@@ -2,7 +2,7 @@
 
 Local PDF translation with Bodhan, persisted jobs, block revisions, and in-place rendering.
 
-Requires Python 3.12 or later and PyMuPDF 1.28 or later. Run one application process so only one worker consumes the SQLite queue.
+Requires Python 3.12 or later and PyMuPDF 1.28 or later. Run one application process; it runs four jobs concurrently by default. Set `STUDIO_WORKERS` (1–64) to adjust the limit. Jobs for the same document remain exclusive, and PDF processing is serialized because PyMuPDF is not thread-safe. SQLite uses WAL mode and serializes writes. Do not run multiple application processes against the same data directory.
 
 ```bash
 python3 -m venv .venv
@@ -46,6 +46,17 @@ errors. Separate stages show upload, reading, translation and PDF preparation.
 Partial results show retained-source counts and plain-language review reasons.
 No-text documents are labelled as preserved originals, and failed reconstruction
 offers a clearly labelled source-retaining draft rather than a successful result.
+
+Truncated individual passages are retried as smaller sentences, clauses, or
+word-separated pieces. Recovery preserves source order, line separators, protected
+numbers/identifiers, and rich-run style ownership. It stops after five split
+levels or 31 provider calls per passage; authentication and service errors do not
+trigger splitting. Recovered passages carry a sentence-flow review warning.
+If any piece still fails, the whole region retains its source text. Translation
+metadata records request sizes, finish reasons, truncation flags, usage (including
+discarded responses), and split counts. Failed-passage diagnostics and batch
+request diagnostics are saved in the job's `translation_batch_stats` payload;
+these diagnostic records do not include request or response text.
 
 After a native-script translation, **Transliterate remaining English** lists
 eligible words from successfully rendered translations. Select up to 20 unique
@@ -99,14 +110,14 @@ curl -X PUT http://127.0.0.1:8000/v1/blocks/BLOCK_ID/translation \
 curl -o translated.pdf http://127.0.0.1:8000/v1/documents/DOCUMENT_ID/artifacts/final.pdf
 ```
 
-Poll each returned job until terminal status before starting the next document operation. Jobs survive restarts; interrupted jobs return to the queue. Caching is disabled by default (`STUDIO_CACHE_ENABLED=false`): each translation request runs fresh, inspection calls OCR again when needed, and rendering rebuilds every page. Translation revisions remain stored in SQLite for history, rendering and manual edits; storing those records does not skip fresh translation requests. Cache reuse can be explicitly enabled with `STUDIO_CACHE_ENABLED=true`.
+Poll each returned job until terminal status before starting the next operation on the same document. Operations on different documents can run concurrently. Jobs survive restarts; interrupted jobs return to the queue. Caching is disabled by default (`STUDIO_CACHE_ENABLED=false`): each translation request runs fresh, inspection calls OCR again when needed, and rendering rebuilds every page. Translation revisions remain stored in SQLite for history, rendering and manual edits; storing those records does not skip fresh translation requests. Cache reuse can be explicitly enabled with `STUDIO_CACHE_ENABLED=true`.
 
 Configure `STUDIO_FONT_DIR` with Noto TTF/OTF fonts for your target scripts. Font files are validated when the application starts. Native Indic output requires the corresponding Noto script font; missing fonts produce `unsupported_glyphs` review issues and retain original text. English/roman output uses MuPDF's built-in fonts. `/v1/health` reports available fonts. Noto fonts can be obtained from https://fonts.google.com/noto.
 
 If a selected font lacks a character, only that character uses a verified
 installed fallback, preferring Noto Sans with the matching weight. Supported
 text retains its original selected font; no fallback spans are added unless
-needed. Fitting, table-cell measurement, vision repair checks and rendering use
+needed. Fitting, table-cell measurement, local checks and rendering use
 the same fallback rules. This lets Arabic-script text retain symbols such as
 `₹` without reverting the whole translated line to English. Characters unsupported
 by all available fonts still produce a review issue and retain source text.
@@ -117,11 +128,19 @@ Default limits: 25 MB, 100 pages. Encrypted documents are rejected. Digital page
 
 ## Scanned PDFs and OCR
 
+OCR adapters may optionally return `polygon_xy`: an ordered, non-self-intersecting list of 3-256 `[x, y]` vertices in input-image pixels, contained within `bbox_xyxy`. These coordinates are validated and stored as `style.source_polygon` in PDF points. The renderer clips the replacement background to that polygon; fitting and translation placement still use the rectangular box. Bodhan currently supplies rectangles, so existing requests retain rectangular regions. This adds polygon support, not automatic curved-text detection or recognition rectification.
+
 Use the same upload and translation endpoints for scanned PDFs. Inspection sends one PNG per scanned page to Bodhan's `indic-ocr` model and converts its pixel coordinates to PDF points. Mixed documents use OCR only for image-only pages; pages with an existing text layer continue through direct extraction. OCR response files are read/written only when caching is explicitly enabled.
 
 If your translation key does not authorize OCR, add `BODHAN_OCR_API_KEY=your_ocr_key` to `.env`. Otherwise OCR falls back to `BODHAN_API_KEY`. The OCR key should have access to `indic-ocr`. `STUDIO_OCR_DPI=150` controls image resolution. No live OCR call is performed by tests; tests use mocked providers.
 
-Scans have no reliable font metadata, so font sizes and styles are estimated. The renderer covers recognized text boxes with white backgrounds and inserts searchable translated text while preserving image pixels outside those boxes. Scanned tables and equations remain in the original image with review issues. Colored backgrounds, handwriting, complex layouts, and low-quality scans need visual review. OCR pages receive an `ocr_layout_estimated` warning; detection confidence is not a guarantee of transcription accuracy. Uploading a scan invokes a billable OCR operation under your Bodhan account.
+Scans have no reliable font metadata, so font sizes and styles are estimated. The renderer replaces recognized text regions with locally estimated paper backgrounds and inserts searchable translated text while preserving image pixels outside those regions. Background estimation samples a nearby band, excludes other text boxes and dark ink, and fits a gentle colour gradient to follow lighting. This approximates paper colour; it does not reconstruct notebook ruling or paper texture. Scanned tables and equations remain in the original image with review issues. Colored backgrounds, handwriting, complex layouts, and low-quality scans need visual review. OCR pages receive an `ocr_layout_estimated` warning; detection confidence is not a guarantee of transcription accuracy. Uploading a scan invokes a billable OCR operation under your Bodhan account.
+
+To compare saved OCR output without making new API calls or modifying the database, run `.venv/bin/python -m scripts.compare_scan_backgrounds DOCUMENT_ID`. This writes the OCR pages and a three-column original/white/local-background comparison under `output/pdf/scan-background-review/`, plus a verification report. It reuses the latest saved translations and layouts, so existing recognition or translation errors remain visible. Add `--refit-ocr --output-dir output/pdf/ocr-fitting-review` to compare saved fitting against freshly measured OCR layouts while preserving the saved translations.
+
+Small math-only OCR detections that substantially overlap a larger passage are held for review with `ocr_overlap_review_required`. Their original text remains stored, but a separate replacement is skipped to avoid printing a misread duplicate on top of the passage. The check also runs when re-rendering saved OCR blocks. Non-overlapping expressions and ordinary currency remain unaffected.
+
+OCR math symbols such as `$\rightarrow$` and `$\Rightarrow$` are displayed as Unicode arrows consistently during fitting, PDF rendering, searchable text generation, and verification. Saved OCR and translation strings remain unchanged. Currency values such as `$100` remain literal. Unsupported or malformed expressions produce an `unsupported_ocr_notation` review warning rather than being silently stripped.
 
 OCR text retains explicit line and paragraph breaks during fitting and rendering. OCR regions whose source text mentions a signature (or whose style marks a signature) are retained with `signature_review_required`, because the region may combine printed labels and handwriting. This conservative rule is not a handwriting detector; it can retain printed signature instructions and miss signatures without those cues.
 
@@ -131,11 +150,11 @@ Translation requests batch text spans as escaped XML, keeping page boundaries an
 
 Every batch requires well-formed text-only XML, exactly the expected ordered IDs, no extra attributes or unparsed content, nonempty span text, no truncation, and unchanged protected literals in their own spans. XML entities are decoded exactly once. Invalid batches split recursively; single-span fallback retains the existing protected-literal retry behavior. Authentication and transport/provider failures propagate rather than triggering a flood of smaller requests. Each accepted span commits independently; reuse after a restart requires the explicit cache opt-in. Translation metadata records batch IDs and sizes, and each successful batch's token usage is assigned once. Job payloads expose `translation_batch_stats` (batch calls, rejected batches, individual calls, and tokens spent on batch requests); individual calls may internally retry, so these counts are not raw HTTP attempt counts. Structural validation does not establish semantic translation quality.
 
-The block classifier uses font/position heuristics and detects ruled tables through PyMuPDF. Complex tables, formulas, decorative layouts, and semantic translation adjudication are not guaranteed. Failed fitting retains source text and adds manual-review issues. The checker validates rendered text, protected literals, collisions, and pixels outside replacement regions. Issues are passed to the disabled reasoning provider for manual review; a future adapter must also validate and apply any proposed correction. The revise endpoint returns `reasoning_provider_not_configured`. Direct text correction is available, including for failed translation blocks.
+The block classifier uses font/position heuristics and detects ruled tables through PyMuPDF. Complex tables, formulas, decorative layouts, and semantic translation adjudication are not guaranteed. Failed fitting retains source text and adds manual-review issues. The checker validates rendered text, protected literals, collisions, and pixels outside replacement regions. Issues remain available for manual review. The revise endpoint returns `reasoning_disabled`. Direct text correction is available, including for failed translation blocks.
 
 ## Rendering and repair
 
-Detected table cells label their contained spans without merging their text or changing their rectangles. Font selection prefers normal-width static Regular or Bold Noto files, tries Condensed variants when necessary, and supports punctuation/bullet fallback. Fixed digital spans use a bounded binary search for the largest fitting positive font size, with no minimum font-size policy or readability warning. OCR blocks retain the previous 8 pt policy. Text that still cannot fit is retained in the source language and flagged.
+Detected table cells label their contained spans without merging their text or changing their rectangles. Font selection prefers normal-width static Regular or Bold Noto files, tries Condensed variants when necessary, and supports punctuation/bullet fallback. Fixed digital spans use a bounded binary search for the largest fitting positive font size, with no minimum font-size policy or readability warning. OCR blocks use the same measured binary search inside their original region, with an 8 pt floor. Newly extracted OCR blocks use 24 pt as a search ceiling rather than inferring a physical font size from OCR newline counts. This also repairs saved OCR blocks whose earlier estimate was too large. Text that still cannot fit is retained in the source language and flagged.
 
 Indic glyphs are shaped and stored as vector outlines, accompanied by a block-level searchable Unicode `ActualText` layer. This avoids broken or duplicated Unicode from complex ligatures; search/selection operates at block granularity. Plain Latin text remains native PDF text. Graphics and image regions outside edited boxes are checked against the original.
 
@@ -205,7 +224,7 @@ paths, underline annotations, or underlines embedded in scanned images. Existing
 paragraph translations may need translation again because underline detection can
 split source runs and changes their formatting hash.
 
-## Typography consistency and optional vision repairs
+## Typography consistency and local layout checks
 
 After individual fitting and shared table-cell layout, a local pass compares
 nearby blocks of the same role in the same column/cell. It penalizes differences
@@ -223,40 +242,64 @@ Regions that cannot be improved safely remain rendered with `small_text` or
 `font_size_inconsistent` review warnings; there is no guarantee that all output
 will exceed 6 pt. The target and refit budget are configurable in `.env.example`.
 
-The DeepSeek vision reviewer is **off by default**, even if an API key is present.
-To opt in, set `STUDIO_VISION_REVIEW_ENABLED=true`, select
-`STUDIO_VISION_PROVIDER=openrouter`, and configure `OPENROUTER_API_KEY`. The default
-OpenRouter model is `deepseek/deepseek-v4.1-flash-1017`. Alternatively select
-`STUDIO_VISION_PROVIDER=deepseek`, configure `DEEPSEEK_API_KEY`, and use the default
-direct model `deepseek-flash`. `STUDIO_VISION_MODEL` overrides the model; select
-one that accepts images. Restart the server after configuration changes.
+Reasoning issue repairs, instruction-driven revisions, and vision repair are disabled.
+The app ignores legacy provider injection arguments and no longer loads repair
+keys/models or reports repair-provider status. The revision endpoint returns
+`410 reasoning_disabled`; direct text edits remain available. Historical provider
+modules and `LegacyRepairSettings` are isolated for offline benchmark reproduction.
 
-**Enabling review sends source and rendered crops of flagged document regions to
-that provider**, with additional image/token charges. The interface discloses
-when review is enabled. No screenshots are sent when disabled. Default limits
-are three region attempts per document, one proposal per region, and a 20-second
-request timeout. Provider failures stop further attempts for that document and
-retain the locally generated PDF.
-Thinking mode is disabled for this small structured review to bound latency and
-output tokens. This stage is separate from the still-disabled instruction-based
-translation revision endpoint.
+## Automatic transliteration and shared layout
 
-The reviewer can propose only `set_font_size`, `set_bbox`, `set_font_width`
-(`normal`, `semi_condensed`, `condensed`), `no_change`, or `manual_review`.
-No text edits, code, image deletion, arbitrary font paths, or decoration removal
-are allowed. Boxes stay inside the page/cell, move at most 24 pt per coordinate,
-and grow by at most 50% in area without increasing overlap with other content.
-Original-box mode rejects box changes. Proposed sizes respect original relative
-run sizes and the configured readable-size target. Font widths must be installed
-and support the required glyphs.
+Select **Transliterate remaining English** before starting, or send
+`"transliterate": true` with the translation request. For native Indic targets,
+the app translates first, calls Bodhan once per distinct eligible English word,
+then applies all replacements to text and styled runs before producing the PDF.
+Acronyms use English letter names. URLs, identifiers, numbers and units are
+protected. English and roman/codemix targets reject this option. A failed
+transliteration request fails the job without applying a partial set of replacements.
+The existing selective preview/apply API remains available for later corrections.
 
-The candidate is measured, rendered separately and checked against the original.
-It is accepted only if local quality improves and no hard check category gets
-worse. Otherwise the original render is kept. This is a bounded heuristic, not
-proof of visual correctness: unflagged artifacts such as raster text shadows may
-still be missed. Review counts, accepted/rejected suggestions and typography
-diagnostics are stored in job `payload.layout_review_stats` and the downloadable
-`/v1/documents/{id}/artifacts/layout-report.json` artifact.
+Auto mode allocates cell space even for short table paragraphs. Shared cell
+layout includes paragraphs that overflowed individually, fits them together,
+and respects a body-size floor of `STUDIO_TYPOGRAPHY_MIN_FONT_PT` (6pt by default).
+A single overflowing rich paragraph can use its available cell area. Missing
+translations, unsupported text, other cell content and images remain barriers.
 
-All automated vision tests use mocked HTTP responses or injected reviewers; they
-do not send test or user documents to an external vision service.
+Nearby body paragraphs may share their combined geometry when one overflows or
+shrinks severely. Headings, captions, lists, cells, footnotes, scans, images,
+visible rules and other content prevent this flow. Their translations stay
+separate. Source spans are grouped before translation, so Bodhan receives the
+complete source paragraph; translated blocks are never arbitrarily concatenated.
+
+Each changed page is rendered and checked before and after the local passes.
+New per-block checker errors or loss of a previously fitted translation cause
+rollback. `layout-report.json` records attempted changes, acceptance, issue
+counts, whether issues decreased, and each translation's ID, text hash and
+retention outcome. Failure reasons distinguish minimum size, insufficient cell
+height, missing glyphs, unavailable fonts and rendering mismatch. These checks
+provide evidence of local improvement, not a guarantee of visual correctness.
+
+Strict escaped XML and ordered-ID validation remain enabled. Stored application
+job statistics showed 536 invalid batches across 1,283 batch calls on review;
+invalid batches also include protected-value failures, so these counts alone do
+not prove malformed XML. The existing bounded splitting is retained pending a
+more specific live failure audit; no extra recovery layers were added.
+
+Database initialization adds unique page/revision indexes and query indexes,
+relationships, foreign keys for new databases, and validation triggers for both
+existing and new SQLite files. Invalid statuses, progress, page references and
+cross-document issue references are rejected. Existing records are preserved;
+pre-existing duplicate page/revision keys must be resolved before unique indexes
+can be installed. Back up production databases before upgrading.
+
+The interface includes the [official IIT Madras logo](https://www.iitm.ac.in/themes/custom/iitm/assets/images/iitm_logo.png)
+and the credit **Made by Krishna Karthikeyan**.
+
+## DocLayNet rendering benchmark
+
+A reproducible 40-page digital-PDF suite compares `spans`, `paragraphs` and `auto`
+using fixed original text and synthetic expansion. It runs without translation,
+OCR or vision calls, stores isolated databases, and generates a visual review
+report with retained-content, fitting and typography diagnostics. See
+[the benchmark guide](benchmarks/doclaynet/README.md) for preparation, commands,
+limitations and optional Indic/RTL profiles.

@@ -1,6 +1,7 @@
 import pymupdf as fitz
 from app.config import StudioError
 from app.providers.ocr import validate_response
+from app.services.ocr_overlaps import overlap_reviews
 
 
 class OCRReaderAgent:
@@ -21,7 +22,15 @@ class OCRReaderAgent:
             bbox = [x0*metadata["width"]/pixel_width,y0*metadata["height"]/pixel_height,min(x1,pixel_width)*metadata["width"]/pixel_width,min(y1,pixel_height)*metadata["height"]/pixel_height]
             label = raw.get("label", "Paragraph").lower()
             kind = "heading" if "title" in label else "table" if label == "table" else "list_item" if label == "list" else "caption" if "caption" in label else label if label in {"header","footer","footnote"} else "paragraph"
-            lines = max(1,len(raw["text"].splitlines()))
-            size = max(8,min(24,(bbox[3]-bbox[1])/lines*.7))
+            # Scans provide no font metrics. This is a fitting ceiling, not a
+            # font inferred from OCR paragraph/line breaks. Actual size is
+            # measured against the translated text and target font by TextFitter.
+            size = 24.0
             results.append({"id":f"{document_id}-p{number}-ocr{index}","document_id":document_id,"page_number":number,"type":kind,"reading_order":raw.get("order",index),"bbox":bbox,"source_text":raw["text"],"style":{"font":"OCR-estimated","size":size,"color":0,"bold":kind=="heading","ocr":True,"complex_table":kind=="table","unsupported_ocr":label in {"equation","expression","chart","diagram","image"}},"confidence":raw.get("conf",0)})
+            if raw.get("polygon_xy") is not None:
+                results[-1]["style"]["source_polygon"] = [[min(x,pixel_width)*metadata["width"]/pixel_width, min(y,pixel_height)*metadata["height"]/pixel_height] for x,y in raw["polygon_xy"]]
+        reviews = overlap_reviews(results)
+        for block in results:
+            if block['id'] in reviews:
+                block['style']['ocr_overlap_with'] = reviews[block['id']]
         return results

@@ -1,0 +1,8 @@
+{
+  "criteria": [
+    {"id": "meaning", "max_points": 40, "description": "Accurate natural translation preserving meaning, facts, numbers and identifiers."},
+    {"id": "completeness", "max_points": 20, "description": "All source content is translated without omissions, duplication or invented text."},
+    {"id": "layout", "max_points": 25, "description": "Readable order and preserved hierarchy, tables and structure; no clipping or overlaps. Valid reflow is allowed."},
+    {"id": "rendering", "max_points": 15, "description": "Legible typography and correctly shaped native-script glyphs without missing characters."}
+  ]
+}

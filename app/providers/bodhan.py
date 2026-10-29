@@ -89,5 +89,6 @@ class BodhanProvider:
                     "target_language": language,
                     "script": script,
                     "truncated": bool(body.get("truncated")) or choice.get("finish_reason") == "length",
+                    "finish_reason": choice.get("finish_reason"),
                     "usage": body.get("usage", {}),
                 }

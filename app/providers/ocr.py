@@ -10,6 +10,24 @@ class OCRProvider(Protocol):
     async def extract(self, png: bytes) -> dict: ...
 
 
+def _simple_polygon(polygon):
+    if len({tuple(p) for p in polygon}) != len(polygon):
+        return False
+    def cross(a, b, c):
+        return (b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0])
+    def on_segment(a, b, c):
+        return cross(a,b,c) == 0 and min(a[0],b[0]) <= c[0] <= max(a[0],b[0]) and min(a[1],b[1]) <= c[1] <= max(a[1],b[1])
+    edges = list(zip(polygon, polygon[1:]+polygon[:1]))
+    for i, (a,b) in enumerate(edges):
+        for j in range(i+1, len(edges)):
+            if j == i+1 or (i == 0 and j == len(edges)-1):
+                continue
+            c,d = edges[j]
+            if (cross(a,b,c)*cross(a,b,d) < 0 and cross(c,d,a)*cross(c,d,b) < 0) or any((on_segment(a,b,c),on_segment(a,b,d),on_segment(c,d,a),on_segment(c,d,b))):
+                return False
+    return True
+
+
 def validate_response(body):
     try:
         if body["choices"][0]["finish_reason"] != "stop" or body.get("truncated"):
@@ -25,6 +43,18 @@ def validate_response(body):
                 raise ValueError()
             if bbox[2] <= bbox[0] or bbox[3] <= bbox[1] or not isinstance(block["text"],str):
                 raise ValueError()
+            polygon = block.get("polygon_xy")
+            if polygon is not None:
+                if not isinstance(polygon, list) or not 3 <= len(polygon) <= 256:
+                    raise ValueError()
+                for point in polygon:
+                    if not isinstance(point, (list, tuple)) or len(point) != 2 or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in point):
+                        raise ValueError()
+                    if not bbox[0] <= point[0] <= bbox[2] or not bbox[1] <= point[1] <= bbox[3]:
+                        raise ValueError()
+                area = sum(a[0]*b[1]-b[0]*a[1] for a,b in zip(polygon, polygon[1:]+polygon[:1]))
+                if abs(area) < 1e-6 or not _simple_polygon(polygon):
+                    raise ValueError()
             confidence = block.get("conf", 0)
             if not isinstance(confidence,(int,float)) or not 0 <= confidence <= 1:
                 raise ValueError()

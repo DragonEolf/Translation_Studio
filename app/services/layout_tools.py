@@ -1,6 +1,7 @@
 """Shared exact layout measurement for fitting, repairs and final rendering."""
 from pathlib import Path
 import pymupdf as fitz
+from app.services.ocr_notation import display_text
 from app.services.text_fitter import FontRegistry, markup, rich_markup, font_width, text_direction
 
 
@@ -10,6 +11,7 @@ def layout_markup(block, translation, layout, fonts=None):
     fonts = fonts or FontRegistry(Path(path).parent if path else None)
     runs = getattr(translation, 'metadata_json', {}).get('rich_text', {}).get('runs') if block.style.get('rich_text') else None
     if runs is not None:
+        runs = [{**run, 'text':display_text(block, run['text'])} for run in runs]
         fonts = fonts or FontRegistry(Path(path).parent if path else None)
         width = font_width(path) if path else 'normal'
         paths = {bold: fonts.resolve(translation.target_language, translation.script, bold, width=width) for bold in (False, True)}
@@ -17,7 +19,7 @@ def layout_markup(block, translation, layout, fonts=None):
             raise ValueError('Requested font width is unavailable')
         content, css = rich_markup(runs, layout.font_size, block.style['size'], paths, block.style.get('align', 'left'), direction=direction, registry=fonts)
     else:
-        content, css = markup(translation.text, layout.font_size, block.style['color'], path,
+        content, css = markup(display_text(block, translation.text), layout.font_size, block.style['color'], path,
                               block.style.get('bold', False), block.style.get('align', 'left'),
                               block.style.get('italic', False), preserve_breaks=block.style.get('ocr', False),
                               underline=block.style.get('underline', False), direction=direction, registry=fonts)

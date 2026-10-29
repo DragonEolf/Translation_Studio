@@ -4,7 +4,8 @@ from pathlib import Path
 import httpx
 import pymupdf as fitz
 import pytest
-from app.config import Settings, StudioError
+from app.config import StudioError
+from app.providers.legacy_settings import LegacyRepairSettings as Settings
 from app.providers.vision import DeepSeekVisionReviewer, RepairProposal
 from app.services.vision_repair import candidate_layout, review_page
 from app.services.renderer import Renderer
