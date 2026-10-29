@@ -29,6 +29,10 @@ class TextReaderAgent:
                         if bounds:
                             span['ink_bbox']=[bounds[0],span['bbox'][1],bounds[1],span['bbox'][3]]
                 attach_underlines(page, data)
+                # Geometry-only barriers let grouping and reflow respect rules,
+                # illustrations and scanned panels without invoking a model.
+                data["layout_barriers"] = [list(i["bbox"]) for i in page.get_image_info()]
+                data["layout_barriers"] += [list(d["rect"]) for d in page.get_drawings()]
                 data["tables"] = []
                 try:
                     for table in page.find_tables().tables:

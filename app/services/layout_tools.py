@@ -17,7 +17,7 @@ def layout_markup(block, translation, layout, fonts=None):
         paths = {bold: fonts.resolve(translation.target_language, translation.script, bold, width=width) for bold in (False, True)}
         if any(p == 'missing' for p in paths.values()):
             raise ValueError('Requested font width is unavailable')
-        content, css = rich_markup(runs, layout.font_size, block.style['size'], paths, block.style.get('align', 'left'), direction=direction, registry=fonts)
+        content, css = rich_markup(runs, layout.font_size, block.style['size'], paths, block.style.get('align', 'left'), direction=direction, registry=fonts, line_height=block.style.get("line_height",1.05))
     else:
         content, css = markup(display_text(block, translation.text), layout.font_size, block.style['color'], path,
                               block.style.get('bold', False), block.style.get('align', 'left'),

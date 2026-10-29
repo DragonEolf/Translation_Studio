@@ -12,6 +12,7 @@ from collections import Counter, defaultdict
 from statistics import median
 import pymupdf as fitz
 from app.config import StudioError
+from app.services.layout_policy import plan_chunks, annotate_policy, allocate_flow_space, role as chunk_role
 
 XLIFF_NS = 'urn:oasis:names:tc:xliff:document:2.2'
 
@@ -55,10 +56,10 @@ AUTO_PARAGRAPH_MIN_SPANS = 4
 
 
 def group_blocks(blocks, pages, min_spans=1):
-    """Conservative source-block paragraphs; split columns, cells and list items.
+    """Build source paragraphs using a conservative, auditable layout policy.
 
-    This retains every original source span and its box in the group's IR.
-    No inference crosses a source text-block boundary.
+    Every source span keeps its identity, geometry and style. Confident physical
+    continuations can cross extraction blocks; independent regions stay anchored.
     """
     raw_text = {}
     for pn, page in enumerate(pages, 1):
@@ -68,6 +69,8 @@ def group_blocks(blocks, pages, min_spans=1):
                 for si, span in enumerate(line['spans']):
                     raw_text[(pn, bi, li, si)] = span['text']
     def span_text(pn, bi, li, si, block, previous=None):
+        original = re.search(r'-b(\d+)-l(\d+)-s(\d+)$', block['id'])
+        bi, li, si = map(int, original.groups())
         text = raw_text.get((pn, bi, li, si), block['source_text'])
         if previous is not None and previous < si:
             skipped = [raw_text.get((pn, bi, li, index), '')
@@ -88,6 +91,7 @@ def group_blocks(blocks, pages, min_spans=1):
         bi, li, si = map(int, match.groups())
         by_block[(block['page_number'], bi)].append((li, si, block))
     grouped = []
+    source_chunks = []
     for (pn, bi), items in by_block.items():
         lines = defaultdict(list)
         for li, si, b in items:
@@ -121,42 +125,51 @@ def group_blocks(blocks, pages, min_spans=1):
             else:
                 chunks.append([item])
         for gi, chunk in enumerate(chunks):
-            members = [b for line in chunk for _, b in line['spans']]
-            if len(members) < min_spans and not any(b["style"].get("table_cell") for b in members):
-                untouched.extend(members)
-                continue
-            weights = Counter()
-            for b in members:
-                weights[style_key(b['style'])] += max(1, len(b['source_text']))
-            base_key = weights.most_common(1)[0][0]
-            base = next(b['style'] for b in members if style_key(b['style']) == base_key)
-            definitions = {}
-            runs = []
-            for line_index, line in enumerate(chunk):
-                for span_index, (si, b) in enumerate(line['spans']):
-                    key = style_key(b['style'])
-                    sid = next((sid for sid, st in definitions.items() if style_key(st) == key), None)
-                    if sid is None:
-                        sid = f'f{len(definitions)}'
-                        definitions[sid] = {k: b['style'][k] for k in ('font','size','color','bold','italic','superscript','underline')}
-                    previous = line['spans'][span_index-1][0] if span_index else None
-                    text = span_text(pn, bi, line['line'], si, b, previous)
-                    if runs and runs[-1]['style_id'] == sid:
-                        runs[-1]['text'] += text
-                        runs[-1]['source_ids'].append(b['id'])
-                    else:
-                        runs.append(dict(id=f's{len(runs)}', text=text, style_id=sid, source_ids=[b['id']]))
-                if line_index < len(chunk)-1:
-                    # Source line breaks are layout artifacts within a paragraph.
-                    runs[-1]['text'] = runs[-1]['text'].rstrip() + ' '
-            base_id = next(sid for sid, st in definitions.items() if style_key(st) == base_key)
-            box = fitz.Rect(members[0]['bbox'])
-            for b in members[1:]:
-                box |= fitz.Rect(b['bbox'])
-            ir = dict(version=1, base_style_id=base_id, styles=definitions, runs=runs, source_spans=[dict(id=b['id'], bbox=b['bbox'], text=b['source_text'], style={k:b['style'][k] for k in ('font','size','color','bold','italic','superscript','underline')}) for b in members])
-            first = members[0]
-            grouped.append({**first, 'id':re.sub(r'-b\d+-l\d+-s\d+$','',first['id'])+f'-b{bi}-g{gi}', 'bbox':list(box), 'source_text':''.join(r['text'] for r in runs).strip(), 'style':{**base, 'digital_span':False, 'fixed_box':True, 'align':source_alignment(chunk, base, pages[pn-1]), 'source_regions':[region for b in members for region in b['style'].get('source_regions',[b['bbox']])], 'underline_paths':[path for b in members for path in b['style'].get('underline_paths',[])], 'rich_text':ir}})
+            source_chunks.append({'pn':pn,'bi':bi,'gi':gi,'lines':chunk})
+    for planned in plan_chunks(source_chunks,pages,blocks):
+        pn, bi, gi, chunk = planned['pn'], planned['bi'], planned['gi'], planned['lines']
+        members = [b for line in chunk for _, b in line['spans']]
+        if len(members) < min_spans and (len(chunk) < 2 or chunk_role(planned) not in {'prose','list'}) and not any(b["style"].get("table_cell") for b in members):
+            untouched.extend(members)
+            continue
+        weights = Counter()
+        for b in members:
+            weights[style_key(b['style'])] += max(1, len(b['source_text']))
+        base_key = weights.most_common(1)[0][0]
+        base = next(b['style'] for b in members if style_key(b['style']) == base_key)
+        definitions = {}
+        runs = []
+        for line_index, line in enumerate(chunk):
+            for span_index, (si, b) in enumerate(line['spans']):
+                key = style_key(b['style'])
+                sid = next((sid for sid, st in definitions.items() if style_key(st) == key), None)
+                if sid is None:
+                    sid = f'f{len(definitions)}'
+                    definitions[sid] = {k: b['style'][k] for k in ('font','size','color','bold','italic','superscript','underline')}
+                previous = line['spans'][span_index-1][0] if span_index else None
+                text = span_text(pn, bi, line['line'], si, b, previous)
+                if runs and runs[-1]['style_id'] == sid:
+                    runs[-1]['text'] += text
+                    runs[-1]['source_ids'].append(b['id'])
+                else:
+                    runs.append(dict(id=f's{len(runs)}', text=text, style_id=sid, source_ids=[b['id']]))
+            if line_index < len(chunk)-1:
+                # Source line breaks are layout artifacts within a paragraph.
+                runs[-1]['text'] = runs[-1]['text'].rstrip() + ' '
+        base_id = next(sid for sid, st in definitions.items() if style_key(st) == base_key)
+        box = fitz.Rect(members[0]['bbox'])
+        for b in members[1:]:
+            box |= fitz.Rect(b['bbox'])
+        ir = dict(version=1, base_style_id=base_id, styles=definitions, runs=runs, source_spans=[dict(id=b['id'], bbox=b['bbox'], text=b['source_text'], style={k:b['style'][k] for k in ('font','size','color','bold','italic','superscript','underline')}) for b in members])
+        first = members[0]
+        grouped.append({**first, 'id':re.sub(r'-b\d+-l\d+-s\d+$','',first['id'])+f'-b{bi}-g{gi}', 'bbox':list(box), 'source_text':''.join(r['text'] for r in runs).strip(), 'style':{**base, 'digital_span':False, 'fixed_box':True, 'align':source_alignment(chunk, base, pages[pn-1]), 'source_regions':[region for b in members for region in b['style'].get('source_regions',[b['bbox']])], 'underline_paths':[path for b in members for path in b['style'].get('underline_paths',[])], 'rich_text':ir}})
+        annotate_policy(grouped[-1],planned)
     result = untouched + grouped
+    expected = [b['id'] for b in blocks]
+    actual = [identity for b in result for identity in ([s['id'] for s in b['style']['rich_text']['source_spans']] if b['style'].get('rich_text') else [b['id']])]
+    if Counter(actual) != Counter(expected) or len(actual) != len(set(actual)):
+        raise StudioError('layout_coverage_invalid','Layout grouping lost or duplicated a source span',500)
+    allocate_flow_space(grouped,result,pages)
     # A PDF glyph box is smaller than its allocated table-cell line area.
     # Use available cell space, bounded by neighboring text and cell borders.
     source_boxes={b['id']:fitz.Rect(b['bbox']) for b in result}

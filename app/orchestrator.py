@@ -15,6 +15,7 @@ from app.services.renderer import Renderer
 from app.services.cell_layout import CellLayout
 from app.services.table_alignment import TableAlignment
 from app.services.paragraph_flow import ParagraphFlow
+from app.services.column_flow import ColumnFlow
 from copy import deepcopy
 from app.services.typography import TypographyPass, diagnostics
 from app.config import StudioError
@@ -139,7 +140,7 @@ class Orchestrator:
                 for page in session.scalars(select(Page).where(Page.document_id==document.id)):
                     page.metadata_json={**page.metadata_json,'layout_mode':job.payload.get('layout_mode','spans')}
                 session.commit()
-                await pdf_thread(self.refresh_geometry,document.id)
+                await pdf_thread(self.refresh_geometry,document.id,True)
                 session.expire_all()
                 changed_target = (document.target_language, document.script) != (job.payload["target_language"], job.payload["script"])
                 if changed_target:
@@ -251,7 +252,7 @@ class Orchestrator:
         job.payload = {**job.payload, 'transliteration_stats': stats}
         session.commit()
 
-    def refresh_geometry(self, document_id):
+    def refresh_geometry(self, document_id, regroup=False):
         """Upgrade digital geometry without discarding text revisions or calling models."""
         extracted = TextReaderAgent().run(self.storage.path(document_id,"source.pdf"))
         new_blocks = BlockMakerAgent().run(document_id,extracted)
@@ -267,6 +268,29 @@ class Orchestrator:
             new_blocks=[b for b in new_blocks if b['page_number'] not in grouped_pages]+selected
             digital_pages = {p.number for p in session.scalars(select(Page).where(Page.document_id==document_id)) if p.metadata_json.get("extraction_method","digital")=="digital"}
             previous_blocks = list(session.scalars(select(Block).where(Block.document_id==document_id)))
+            if not regroup:
+                # Render-only upgrades cannot invent a paragraph translation.
+                # Keep previously translated child regions until the user requests
+                # fresh translation, which groups the SOURCE before provider calls.
+                preserved=[]
+                for item in new_blocks:
+                    policy=item['style'].get('layout_policy',{})
+                    old=session.get(Block,item['id'])
+                    if policy.get('source_block_count',1)>1 and (not old or old.source_text!=item['source_text']):
+                        source_ids={s['id'] for s in item['style']['rich_text']['source_spans']}
+                        children=[]; coverage=set()
+                        for candidate in previous_blocks:
+                            if candidate.style.get('retired') or candidate.page_number!=item['page_number']:
+                                continue
+                            ids={s['id'] for s in candidate.style.get('rich_text',{}).get('source_spans',[])} or {candidate.id}
+                            if ids <= source_ids:
+                                children.append(candidate); coverage.update(ids)
+                        if coverage==source_ids and any(latest(session,child.id) for child in children):
+                            fields=('id','document_id','page_number','type','reading_order','bbox','source_text','style','confidence')
+                            preserved.extend({field:deepcopy(getattr(child,field)) for field in fields} for child in children)
+                            continue
+                    preserved.append(item)
+                new_blocks=preserved
             identities = set()
             for item in new_blocks:
                 if item["page_number"] not in digital_pages:
@@ -401,13 +425,14 @@ class Orchestrator:
                 style_snapshots = {b.id: deepcopy(b.style) for b, _, _ in entries}
                 cell_changes = CellLayout(self.reorganiser.fonts, self.settings.studio_typography_min_font_pt).apply(entries, blocks, page, images)
                 paragraph_changes = ParagraphFlow(self.reorganiser.fonts, self.settings.studio_typography_min_font_pt).apply(entries, blocks, page, graphics)
+                column_adjusted = ColumnFlow(self.reorganiser.fonts,self.settings.studio_typography_min_font_pt).apply(entries,blocks,page,graphics)
                 adjusted = {'changed_blocks': [], 'refits': 0}
                 if self.settings.studio_typography_enabled:
                     adjusted = TypographyPass(self.reorganiser.fonts,self.settings.studio_typography_min_font_pt,self.settings.studio_typography_max_refits).apply(entries,page)
                 with fitz.open(source) as alignment_source:
                     alignment_changes = TableAlignment(self.reorganiser.fonts).apply(
                         alignment_source[page.number-1], entries, blocks, images)
-                changes = cell_changes + paragraph_changes + adjusted['changed_blocks'] + alignment_changes
+                changes = cell_changes + paragraph_changes + adjusted['changed_blocks'] + alignment_changes + column_adjusted['changed_blocks']
                 checked = before
                 accepted = False
                 if changes:
@@ -449,14 +474,15 @@ class Orchestrator:
                         'font_size':layout.font_size, 'bbox':layout.bbox,
                         'available_height':layout.bbox[3]-layout.bbox[1],
                         'source_line_count':len(block.source_text.splitlines()),
-                        'before':snapshots[block.id]})
+                        'before':snapshots[block.id],
+                        'layout_policy':block.style.get('layout_policy',{'decision':'anchor','reason':'original_span_or_ocr'})})
                 included = {b.id for b, _, _ in entries}
                 block_outcomes.extend({'block_id':b.id, 'translation_id':None,
                     'translation_retained':False, 'failure_reason':'missing_translation'}
                     for b in blocks if b.id not in included)
                 layout_report['pages'].append({'page':page.number,
                     'cell_changes':cell_changes, 'paragraph_changes':paragraph_changes,
-                    'alignment_changes':alignment_changes,
+                    'alignment_changes':alignment_changes, 'column_flow':column_adjusted,
                     'change_accepted':accepted, 'issues_before':len(before), 'issues_after':len(checked),
                     'issues_reduced':len(checked) < len(before),
                     'issue_counts_before':dict(Counter(i['code'] for i in before)),

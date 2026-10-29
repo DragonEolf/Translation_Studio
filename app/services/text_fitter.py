@@ -135,7 +135,7 @@ def markup(text, size, color, font_path=None, bold=False, align="left", italic=F
     return f'<div dir="{direction}">{content}</div>', css
 
 
-def rich_markup(runs, size, original_size, fonts, align="left", direction="ltr", registry=None):
+def rich_markup(runs, size, original_size, fonts, align="left", direction="ltr", registry=None, line_height=1.05):
     """Render local style references using actual Regular/Bold font files."""
     align = text_alignment(align, direction)
     faces=[]
@@ -156,7 +156,7 @@ def rich_markup(runs, size, original_size, fonts, align="left", direction="ltr",
         faces.append(fallback_faces)
         text=text.replace('●','<span class="symbol">●</span>').replace('•','<span class="symbol">•</span>')
         parts.append('<span style="'+inline+'">'+text+'</span>')
-    css=''.join(faces)+f'* {{margin:0;padding:0}} div {{font-size:{size}pt;line-height:1.05;text-align:{align};direction:{direction}}} .symbol {{font-family:sans-serif}}'
+    css=''.join(faces)+f'* {{margin:0;padding:0}} div {{font-size:{size}pt;line-height:{line_height};text-align:{align};direction:{direction}}} .symbol {{font-family:sans-serif}}'
     return '<div dir="'+direction+'">'+''.join(parts)+'</div>',css
 
 
@@ -172,7 +172,7 @@ class TextFitter:
         original = float(block.style["size"])
         def content_at(size):
             if rich_runs is not None:
-                return rich_markup(rich_runs,size,original,rich_fonts or {},block.style.get("align","left"),direction=direction,registry=self.fonts)
+                return rich_markup(rich_runs,size,original,rich_fonts or {},block.style.get("align","left"),direction=direction,registry=self.fonts,line_height=block.style.get("line_height",1.05))
             return markup(text,size,block.style["color"],font_path,block.style.get("bold",False),block.style.get("align","left"),block.style.get("italic",False),preserve_breaks=block.style.get("ocr",False),underline=block.style.get("underline",False),direction=direction,registry=self.fonts)
         if block.style.get("fixed_box") or block.style.get("ocr"):
             # Find the largest fitting size; zero is a search bound, never a

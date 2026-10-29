@@ -20,7 +20,8 @@ review interface, not measured translation quality.*
 - **Indic scripts and RTL text:** bundled Noto fonts, native language labels,
   script-aware shaping, and basic Urdu, Kashmiri and Sindhi RTL support.
 - **Layout choices:** preserve original text boxes, reflow formatted paragraphs,
-  or use the default automatic mode. Shared table-cell fitting and local
+  or use the default automatic mode. Source continuation detection, measured
+  paragraph flow, shared table-cell fitting and local
   typography passes improve spacing and size consistency where safe.
 - **Formatting and literal protection:** retain inline styles and validate
   numbers, identifiers, URLs and translation markup before accepting responses.
@@ -134,6 +135,10 @@ reviewer notes. It proposes constrained wording or layout changes. Application
 code validates and renders proposals before publishing them, preserving revision
 history and a previous-output backup. This is a constrained document workflow;
 models do not receive arbitrary filesystem or command access.
+
+The [layout policy guide](docs/layout-policy.md) explains when regions may join,
+when they stay anchored, how shaped text is measured, and how paragraph sizes
+and available space are optimized.
 
 ## Codebase
 

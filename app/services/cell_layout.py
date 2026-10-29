@@ -95,7 +95,7 @@ class CellLayout:
                 runs = translation.metadata_json['rich_text']['runs']
                 fonts = {bold: self.fonts.resolve(translation.target_language, translation.script, bold) for bold in (False, True)}
                 size = float(block.style['size']) * scale
-                content, css = rich_markup(runs, size, float(block.style['size']), fonts, block.style.get('align', 'left'), direction=text_direction(translation.target_language, translation.script), registry=self.fonts)
+                content, css = rich_markup(runs, size, float(block.style['size']), fonts, block.style.get('align', 'left'), direction=text_direction(translation.target_language, translation.script), registry=self.fonts, line_height=block.style.get("line_height",1.05))
                 page = doc.new_page(width=max(72, bounds.width + 2), height=measure_height + 2)
                 spare, _ = page.insert_htmlbox(fitz.Rect(0, 0, bounds.width, measure_height), content, css=css, scale_low=1)
                 if spare < 0:

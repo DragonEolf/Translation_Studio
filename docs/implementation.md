@@ -4,9 +4,10 @@ For installation, usage, and the project overview, see the [README](../README.md
 
 Open http://127.0.0.1:8000/ for the single-page upload/download interface. Language
 options show English and native names. **Automatic** is the interface default:
-within each conservatively detected paragraph, 1–3 spans retain their individual
-boxes and groups of 4 or more spans use paragraph reflow. This is a starting
-heuristic for text fragmentation, not a learned prediction of output quality.
+confident multiline source paragraphs can reflow across extraction blocks.
+Isolated single-line groups of 1–3 spans retain their individual boxes; groups
+of 4 or more spans retain the earlier formatted-group path. The deterministic
+policy and its safety boundaries are described in [the layout guide](layout-policy.md).
 Choose **Preserve original layout** to keep
 individual text boxes fixed (`spans`), or **Improve readability** for experimental
 paragraph reflow with inline formatting (`paragraphs`).
@@ -199,8 +200,8 @@ request; the API default remains `"spans"`. The selected mode persists for later
 render requests. Switching modes retains translation history and regenerates
 active geometry from the original PDF. Caching remains disabled by default.
 
-Groups are conservative: they stay within source PDF text blocks, avoid crossing
-columns and table cells, and separate bullet items. Table groups can use free space inside their cell,
+Groups are conservative: confirmed continuation lines may cross source PDF text
+blocks, while columns, table cells and new bullet items remain separate. Table groups can use free space inside their cell,
 bounded by cell borders and neighboring text. This is a layout heuristic,
 not a guarantee of semantic paragraph detection. Scanned PDFs keep the existing
 OCR path.
