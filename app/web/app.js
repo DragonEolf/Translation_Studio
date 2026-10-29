@@ -94,6 +94,7 @@ function progress(title, detail, step, value) {
   else { $("progress").value = Math.max(0, Math.min(100, value)); $("percent").textContent = `${Math.round(value)}%`; }
 }
 function resetResult() {
+  window.documentReview?.reset();
   for (const id of ["download","draft","review-note","resume","new-document","document-note","transliterate","transliteration-panel"]) $(id).hidden = true;
   $("review-reasons").replaceChildren();
   $("progress-wrap").hidden = false;
@@ -174,6 +175,7 @@ async function finish() {
   $("new-document").hidden = false;
   $("status-title").focus();
   finishedDocument = {documentId:active.documentId,language:active.language,layout:active.layout};
+  window.documentReview?.offer(active.documentId);
   $("transliterate").hidden = empty || active.language === "en" || limits?.transliteration_configured === false;
   active = null; saveActive();
 }
@@ -216,6 +218,7 @@ function showFailure(error) {
   $("resume").hidden = !(error.recoverable && active);
   if (error.recoverable && active) $("status-detail").textContent += " Reconnect to check this same job without starting another translation.";
   if (error.code === "reconstruction_failed" && active) {
+    window.documentReview?.offer(active.documentId);
     $("draft").href = `/v1/documents/${active.documentId}/artifacts/draft.pdf`; $("draft").download = ""; $("draft").hidden = false;
   }
   if (!error.recoverable) { active = null; saveActive(); $("new-document").hidden = false; }
@@ -326,7 +329,7 @@ $("apply-transliteration").addEventListener("click",async()=>{
   finally { setBusy(false); }
   if (active) await runActive();
 });
-$("pdf-file").addEventListener("change", () => { if (!active) $("result").hidden = true; selectFile(); });
+$("pdf-file").addEventListener("change", () => { if (!active) { $("result").hidden = true; window.documentReview?.reset(); } selectFile(); });
 $("language").addEventListener("change", fontNote);
 for (const radio of document.querySelectorAll('input[name="layout_mode"]')) radio.addEventListener("change", layoutHelp);
 for (const event of ["dragenter","dragover"]) $("dropzone").addEventListener(event, e => { e.preventDefault(); if (!busy && !active) $("dropzone").classList.add("dragover"); });
@@ -335,7 +338,7 @@ $("dropzone").addEventListener("drop", e => {
   if (busy || active || !e.dataTransfer.files.length) return;
   if (e.dataTransfer.files.length !== 1) { $("file-error").textContent = "Choose one PDF at a time."; $("file-error").hidden = false; setBusy(false); return; }
   const transfer = new DataTransfer(); transfer.items.add(e.dataTransfer.files[0]); $("pdf-file").files = transfer.files;
-  $("result").hidden = true; selectFile();
+  $("result").hidden = true; window.documentReview?.reset(); selectFile();
 });
 $("translate-form").addEventListener("submit", async event => {
   event.preventDefault();

@@ -57,20 +57,24 @@ class Assessment(BaseModel):
     issues: list[Region] = Field(max_length=50)
 
 
-def fingerprint(paths, model, rubric):
-    digest = hashlib.sha256((model + JUDGE + rubric.model_dump_json()).encode())
+def fingerprint(paths, model, rubric, *, judge_prompt=JUDGE):
+    digest = hashlib.sha256((model + judge_prompt + rubric.model_dump_json()).encode())
     for path in paths:
         digest.update(Path(path).read_bytes())
     return digest.hexdigest()
 
 
-def compare(router, source, reference, candidate, language, rubric, model, output):
+def compare(router, source, reference, candidate, language, rubric, model, output,
+            *, judge_prompt=JUDGE):
     content = [{"type": "text", "text": json.dumps({
         "target_language": language, "rubric": rubric.model_dump(),
         "coordinate_system": "candidate PDF points, top-left origin; page numbers start at 1"})}]
     dimensions = []
     regions = {}
-    for label, path in [("SOURCE", source), ("REFERENCE", reference), ("CANDIDATE", candidate)]:
+    documents = [("REFERENCE", reference), ("CANDIDATE", candidate)]
+    if source is not None:
+        documents.insert(0, ("SOURCE", source))
+    for label, path in documents:
         with fitz.open(path) as pdf:
             if not 1 <= len(pdf) <= 12:
                 raise ValueError("Comparer accepts 1-12 pages per document; no pages are silently skipped")
@@ -113,7 +117,7 @@ def compare(router, source, reference, candidate, language, rubric, model, outpu
                     "extracted_text": page.get_text()[:30000]}, ensure_ascii=False)},
                     {"type": "image_url", "image_url": {"url": "data:image/png;base64,"+
                      base64.b64encode(png).decode("ascii")}}])
-    answer, usage = router.complete(model, JUDGE, content, Assessment.model_json_schema(), 6000)
+    answer, usage = router.complete(model, judge_prompt, content, Assessment.model_json_schema(), 6000)
     # Keep the raw response even when semantic validation rejects it.
     (output / "comparison-response.json").write_text(json.dumps({"response": answer, **usage}, ensure_ascii=False, indent=2))
     assessment = Assessment.model_validate_json(answer)
@@ -133,7 +137,8 @@ def compare(router, source, reference, candidate, language, rubric, model, outpu
                   criteria=[c.model_dump() for c in assessment.criteria], issues=issues,
                   rubric=rubric.model_dump(), model=usage["model"],
                   usage=usage["usage"],
-                  fingerprint=fingerprint([source, reference, candidate], model, rubric),
+                  fingerprint=fingerprint([path for _, path in documents], model, rubric,
+                                          judge_prompt=judge_prompt),
                   bbox_units="PDF points", bbox_origin="top-left", bbox_document="candidate.pdf",
                   assessment_type="automated, not human-validated")
     (output / "evaluation.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))

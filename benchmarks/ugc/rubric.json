@@ -1,0 +1,7 @@
+{
+  "criteria": [
+    {"id": "content_similarity", "max_points": 50, "description": "Similarity of visible Hindi wording, content, names, numbers, table values and ordering to the official Hindi reference. Score reference agreement only, not translation fidelity to English."},
+    {"id": "layout_similarity", "max_points": 35, "description": "Similarity to the reference's page composition, hierarchy, table geometry, alignment, spacing and placement of text and graphics."},
+    {"id": "appearance_similarity", "max_points": 15, "description": "Similarity to the reference's typography, glyph appearance, colors, rules and visual styling. Ignore evaluator region-label overlays."}
+  ]
+}

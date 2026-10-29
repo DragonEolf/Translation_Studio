@@ -5,6 +5,10 @@ from pydantic import Field
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    openrouter_api_key: str = ""
+    studio_repair_model: str = "openai/gpt-4.1"
+    studio_repair_max_regions: int = Field(default=20, ge=1, le=100)
+    studio_repair_timeout_seconds: float = Field(default=60, ge=1, le=180)
     bodhan_api_key: str = ""
     bodhan_ocr_api_key: str = ""
     studio_ocr_dpi: int = Field(default=150,ge=72,le=300)

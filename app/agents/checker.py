@@ -21,6 +21,9 @@ def normalized(text):
 
 
 class CheckerAgent:
+    def __init__(self, fonts=None):
+        self.fonts = fonts
+
     def run(self, source, rendered, number, entries):
         issues = []
         def add(code, message, block=None, severity="error"):
@@ -61,6 +64,9 @@ class CheckerAgent:
                 for region in [block.bbox, layout.bbox, *block.style.get("source_regions", [])]:
                     r = fitz.Rect(region) + (-3, -3, 3, 3)
                     mask[max(0,int(r.y0)):min(mask.shape[0],int(r.y1)+1), max(0,int(r.x0)):min(mask.shape[1],int(r.x1)+1)] = False
+            from app.services.table_alignment import TableAlignment
+            for block, code, message in TableAlignment(self.fonts).diagnostics(src, entries):
+                add(code, message, block, severity='warning')
             fitted = [(b, l) for b, _, l in entries if l.fit_status == "fitted"]
             for i, (block, layout) in enumerate(fitted):
                 for other, other_layout in fitted[i+1:]:

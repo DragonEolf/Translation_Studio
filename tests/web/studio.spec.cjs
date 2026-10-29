@@ -8,6 +8,19 @@ const web = path.resolve(__dirname, '../../app/web');
 const output = path.resolve(__dirname, '../../output/ui-verification');
 const health = {transliteration_configured:true,supported_languages:['en','hi','ta','ur'],available_font_languages:['en','hi','ta','ur'],max_upload_mb:25,max_pages:100,translation_configured:true,ocr_configured:true};
 let browser;
+function reviewFixture() {
+  const region = (id, page_number, status, issues = []) => ({id,page_number,status,issues,
+    source_rects:[[45,100,550,145]],translated_rects:[[45,100,550,165]],
+    source_text:'The project report is due on October 31, 2026.',
+    translated_text:'परियोजना रिपोर्ट 31 अक्टूबर, 2026 तक जमा करनी है।',rendered:true});
+  return {document_id:'doc',version:'v1',filename:'Project report.pdf',output:'final.pdf',
+    pages:[1,2].map(number=>({number,width:600,height:800,source_preview:`/v1/documents/doc/artifacts/source-${number}.png`,translated_preview:`/v1/documents/doc/artifacts/page-${number}.png`})),
+    regions:[region('small',1,'review',[{code:'small_text',severity:'warning',message:'Text is small; inspect readability.'}]),
+      {...region('retained',1,'change',[{code:'overflow',severity:'error',message:'Translation could not fit; source retained.'}]),source_rects:[[45,250,550,295]],translated_rects:[[45,250,550,295]],rendered:false},
+      {...region('clear',2,'clear'),source_text:'<img src=x onerror="window.injected=true">'},
+      {id:'page-warning',page_number:2,status:'review',source_rects:[],translated_rects:[],source_text:'',translated_text:null,rendered:null,issues:[{code:'graphics_changed',severity:'warning',message:'Inspect the full page.'}]}]};
+}
+const reviewImage = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="800" viewBox="0 0 600 800"><rect width="600" height="800" fill="white"/><text x="45" y="55" font-size="23" font-family="serif" fill="#352f2b">Project report</text><path d="M45 75H550" stroke="#ccc"/><text x="45" y="120" font-size="13" font-family="sans-serif">The project report is due on October 31, 2026.</text><text x="45" y="140" font-size="13" font-family="sans-serif">Submit your work and demonstrate three diverse test cases.</text><text x="45" y="230" font-size="17" font-family="serif">Evaluation criteria</text><text x="45" y="270" font-size="13" font-family="sans-serif">Code quality, functionality, robustness and user experience.</text><path d="M45 330H550M45 375H550M45 420H550M45 330V420M310 330V420M550 330V420" stroke="#aaa"/><text x="60" y="358" font-size="13">Demonstration</text><text x="330" y="358" font-size="13">Online</text><text x="60" y="402" font-size="13">Submission</text><text x="330" y="402" font-size="13">October 31, 2026</text></svg>`;
 async function setup(scenario = {}) {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -28,6 +41,27 @@ async function setup(scenario = {}) {
     }
     if (pathname === '/v1/jobs/inspect') return json({status:state.inspectError?'failed':'completed',progress:1,error_code:state.inspectError});
     if (pathname === '/v1/documents/doc/pages') return json(state.pages || [{metadata_json:{extraction_method:'digital'}}]);
+    if (pathname === '/v1/documents/doc/review') {
+      state.reviewReads=(state.reviewReads || 0)+1;
+      if (state.reviewFails) { state.reviewFails=false; return json({error:{code:'document_busy',message:'Wait for the current job to finish.'}},409); }
+      return json(state.review || reviewFixture());
+    }
+    if (/\/artifacts\/(source|page)-\d+\.png$/.test(pathname)) {
+      if (state.brokenPreview && pathname.includes('page-')) return route.fulfill({status:404,body:'Not ready'});
+      return route.fulfill({contentType:'image/svg+xml',body:reviewImage});
+    }
+    if (pathname === '/v1/documents/doc/review/repair') {
+      state.repairPayload=route.request().postDataJSON(); state.repairCalls=(state.repairCalls || 0)+1;
+      if (state.repairUnavailable) return json({error:{code:'repair_not_configured',message:'Set OPENROUTER_API_KEY to enable AI repair.'}},503);
+      if (state.loseRepair && !state.repairLost) { state.repairLost=true; return route.abort(); }
+      return json({job_id:'repair'},202);
+    }
+    if (pathname === '/v1/jobs/repair') {
+      if (state.repairRunning) return json({status:'running',progress:.4});
+      state.review=reviewFixture(); state.review.version='repaired-v2'; state.review.previous_available=true;
+      state.review.regions[0].translated_text='Corrected translation';
+      return json({status:'completed_with_issues',payload:{accepted:1,repair_results:[{block_id:'small',status:'repaired',reason:'Centered the selected text'}]}});
+    }
     if (pathname === '/v1/documents/doc/translations') {
       state.translations++; state.payload = route.request().postDataJSON();
       if (state.lostSubmission) { state.lostSubmission=false; return route.abort(); }
@@ -85,6 +119,138 @@ async function test(name, scenario, fn) {
     }
     await page.setViewportSize({width:390,height:1000});
     await page.screenshot({path:path.join(output,'mobile.png'),fullPage:true});
+  });
+  await test('visual issue review, paired highlights, decisions and output version',{},async ({page,state}) => {
+    await page.setViewportSize({width:1500,height:1100});
+    await start(page); await completed(page);
+    await page.locator('#see-issues').click();
+    await page.locator('#review-content').waitFor({state:'visible'});
+    await page.locator('#review-source').evaluate(img => img.decode());
+    assert.equal(await page.locator('.review-region').count(),2);
+    assert.equal(await page.locator('#source-highlights .selected').count(),1);
+    assert.equal(await page.locator('#translated-highlights .selected').count(),1);
+    assert.match(await page.locator('#review-bar').getAttribute('aria-label'),/1 need attention, 1 to check visually, 1 with no automatic issue/);
+    await page.locator('#review-okay').click();
+    assert.equal(await page.locator('.review-region[data-region-id="small"]').count(),0);
+    assert.equal(await page.locator('#source-highlights [data-region-id="small"]').count(),0);
+    assert.equal(await page.locator('.review-region[aria-pressed="true"]').getAttribute('data-region-id'),'retained');
+    assert.match(await page.locator('#review-counts').innerText(),/2 pending findings/);
+    await page.locator('#review-filter').selectOption('okay');
+    assert.equal(await page.locator('#source-highlights .region-okay').count(),1);
+    assert.match(await page.locator('#review-region-status').innerText(),/Automatic: Check visually/);
+    await page.locator('#close-review').click();
+    await page.locator('#see-issues').click();
+    await page.locator('#review-content').waitFor({state:'visible'});
+    assert.equal(await page.locator('.review-region[data-region-id="small"]').count(),0);
+    await page.locator('#review-filter').selectOption('okay');
+    assert.equal(await page.locator('#review-okay').getAttribute('aria-pressed'),'true');
+    await page.locator('#review-reset').click();
+    assert.equal(await page.locator('.review-region').count(),0);
+    await page.locator('#review-filter').selectOption('flagged');
+    assert.equal(await page.locator('.review-region[data-region-id="small"]').count(),1);
+    await page.locator('#review-okay').click();
+    await page.locator('.review-region[data-region-id="retained"]').click();
+    assert.match(await page.locator('#review-region-status').innerText(),/Source text is retained/);
+    await page.locator('#review-change').click();
+    assert.equal(await page.locator('.review-region').count(),0);
+    assert.equal(await page.locator('#source-highlights .region-marker').count(),0);
+    assert.equal(await page.locator('#review-detail').isVisible(),false);
+    assert.match(await page.locator('#review-counts').innerText(),/1 pending findings/);
+    assert.match(await page.locator('#review-counts').innerText(),/1 queued for changes/);
+    await page.locator('#review-filter').selectOption('human-change');
+    assert.equal(await page.locator('.review-region').count(),1);
+    assert.match(await page.locator('.review-region').innerText(),/Queued for changes/);
+    assert.equal(await page.locator('#review-change').getAttribute('aria-pressed'),'true');
+    await page.locator('#review-filter').selectOption('flagged');
+    await page.locator('#review-zoom').selectOption('2');
+    await page.locator('#source-scroll').evaluate(node=>{node.scrollTop=100;node.scrollLeft=50;});
+    await page.waitForFunction(()=>document.querySelector('#translated-scroll').scrollTop>50);
+    await page.locator('#review-zoom').selectOption('1');
+    await page.locator('#document-review').scrollIntoViewIfNeeded();
+    await page.locator('#document-review').screenshot({path:path.join(output,'side-by-side-review.png')});
+    await page.locator('#review-next').click();
+    assert.equal(await page.locator('.review-region').count(),1);
+    await page.locator('.review-region').click();
+    assert.match(await page.locator('#review-region-status').innerText(),/No precise region/);
+    assert.equal(await page.locator('#source-highlights .selected').count(),0);
+    await page.locator('#review-filter').selectOption('all');
+    await page.locator('#source-highlights [data-region-id="clear"]').click();
+    assert.match(await page.locator('#review-source-text').innerText(),/<img/);
+    assert.equal(await page.evaluate(()=>Boolean(window.injected)),false);
+    await page.locator('#review-highlights').uncheck();
+    assert.equal(await page.locator('#source-highlights').isVisible(),false);
+    await page.locator('#review-highlights').check();
+    for (const width of [320,390,768,1280]) {
+      await page.setViewportSize({width,height:1000});
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    }
+    await page.setViewportSize({width:390,height:1000});
+    await page.locator('#document-review').screenshot({path:path.join(output,'side-by-side-review-mobile.png')});
+    state.review=reviewFixture(); state.review.version='v2';
+    await page.locator('#close-review').click();
+    await page.locator('#see-issues').click();
+    await page.locator('#review-content').waitFor({state:'visible'});
+    assert.equal(await page.locator('#review-okay').getAttribute('aria-pressed'),'false');
+    assert.equal(state.translations,1);
+    await page.locator('#new-document').click();
+    assert.equal(await page.locator('#document-review').isVisible(),false);
+  });
+  await test('AI repairs only queued regions and final download follows results',{},async ({page,state}) => {
+    await start(page); await completed(page); await page.locator('#see-issues').click();
+    await page.locator('#review-content').waitFor({state:'visible'});
+    assert.equal(await page.locator('#repair-marked').isDisabled(),true);
+    await page.locator('#review-change').click();
+    await page.locator('#review-okay').click();
+    await page.locator('#repair-instruction').fill('Center the selected text');
+    await page.locator('#repair-marked').click();
+    await page.waitForFunction(()=>document.querySelector('#repair-status').textContent.includes('1 region repaired'));
+    assert.deepEqual(state.repairPayload.region_ids,['small']);
+    assert.equal(state.repairPayload.instruction,'Center the selected text');
+    assert.equal(state.repairCalls,1);
+    assert.match(await page.locator('#repair-results').innerText(),/Repaired — review again/);
+    assert.match(await page.locator('#review-final-download').getAttribute('href'),/final.pdf.*repaired-v2/);
+    assert.equal(await page.locator('#review-previous-download').isVisible(),true);
+    assert.equal(await page.locator('#repair-marked').isDisabled(),true);
+    assert.equal(await page.evaluate(()=>document.querySelector('#repair-results').compareDocumentPosition(document.querySelector('#review-final-download')) & Node.DOCUMENT_POSITION_FOLLOWING),4);
+  });
+  await test('AI repair unavailable retains queue and download',{repairUnavailable:true},async ({page}) => {
+    await start(page); await completed(page); await page.locator('#see-issues').click();
+    await page.locator('#review-content').waitFor({state:'visible'});
+    await page.locator('#review-change').click(); await page.locator('#repair-marked').click();
+    await page.waitForFunction(()=>document.querySelector('#repair-status').textContent.includes('OPENROUTER_API_KEY'));
+    assert.match(await page.locator('#repair-queue-count').innerText(),/1 region queued/);
+    assert.match(await page.locator('#review-final-download').getAttribute('href'),/final.pdf.*v1/);
+  });
+  await test('lost AI submission reconnects using the same request',{loseRepair:true},async ({page,state}) => {
+    await start(page); await completed(page); await page.locator('#see-issues').click();
+    await page.locator('#review-content').waitFor({state:'visible'});
+    await page.locator('#review-change').click(); await page.locator('#repair-marked').click();
+    await page.waitForFunction(()=>document.querySelector('#repair-status').textContent.includes('Reopen'));
+    const requestId=state.repairPayload.request_id;
+    await page.locator('#close-review').click(); await page.locator('#see-issues').click();
+    await page.waitForFunction(()=>document.querySelector('#repair-status').textContent.includes('1 region repaired'));
+    assert.equal(state.repairPayload.request_id,requestId);
+  });
+  await test('AI repair resumes after browser reload without duplicate submission',{repairRunning:true},async ({page,state}) => {
+    await start(page); await completed(page); await page.locator('#see-issues').click();
+    await page.locator('#review-content').waitFor({state:'visible'});
+    await page.locator('#review-change').click(); await page.locator('#repair-marked').click();
+    await page.waitForFunction(()=>document.querySelector('#repair-status').textContent.includes('40%'));
+    await page.reload();
+    await page.waitForFunction(()=>document.querySelector('#repair-status').textContent.includes('40%'));
+    state.repairRunning=false;
+    await page.waitForFunction(()=>document.querySelector('#repair-status').textContent.includes('1 region repaired'));
+    assert.equal(state.repairCalls,1);
+    await page.locator('.review-repair').screenshot({path:path.join(output,'ai-repair-and-download.png')});
+  });
+  await test('review retries and missing page previews',{reviewFails:true,brokenPreview:true},async ({page}) => {
+    await start(page); await completed(page); await page.locator('#see-issues').click();
+    await page.locator('#retry-review').waitFor({state:'visible'});
+    assert.equal(await page.locator('#download').isVisible(),true);
+    await page.locator('#retry-review').click();
+    await page.locator('#translated-unavailable').waitFor({state:'visible'});
+    assert.equal(await page.locator('#translated-canvas').isVisible(),false);
+    assert.equal(await page.locator('#source-canvas').isVisible(),true);
   });
   await test('initial transliteration option follows language and reaches request',{},async ({page,state}) => {
     await page.locator('#language').selectOption('en');

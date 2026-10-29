@@ -15,7 +15,8 @@ from app.config import Settings, StudioError
 from app.models import database, Document, Page, Block, Translation, Issue, Job, Artifact, LayoutResult, uid
 from app.agents.translator import source_hash
 from app.services.rich_text import rich, format_hash
-from app.orchestrator import Orchestrator, latest
+from app.orchestrator import Orchestrator, latest, pdf_thread
+from app.services.document_review import review_snapshot
 from app.providers.bodhan import BodhanProvider, validate_target, LANGUAGES, LANGUAGE_NAMES
 from app.providers.ocr import BodhanOCRProvider
 from app.services.storage import Storage
@@ -46,6 +47,13 @@ class EditRequest(BaseModel):
     text: str = Field(min_length=1, max_length=50000)
 
 
+class RepairRequest(BaseModel):
+    version: str = Field(min_length=1, max_length=100)
+    request_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    region_ids: list[str] = Field(min_length=1, max_length=100)
+    instruction: str = Field(default="", max_length=2000)
+
+
 class ReviseRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=10000)
 
@@ -54,15 +62,18 @@ def record(row):
     return {column.name: getattr(row, column.name) for column in row.__table__.columns}
 
 
-def create_app(settings=None, provider=None, reasoning=None, ocr_provider=None, vision_reviewer=None, transliteration_provider=None):
+def create_app(settings=None, provider=None, reasoning=None, ocr_provider=None, vision_reviewer=None, transliteration_provider=None, repair_provider=None):
     settings = settings or Settings()
     storage = Storage(settings.studio_data_dir)
     engine, sessions = database(storage.root / "studio.sqlite3")
     fonts = FontRegistry(settings.studio_font_dir)
-    # Legacy injection arguments remain accepted, but external repair is disabled.
+    # Legacy repair injection arguments remain unused; selected-region repair
+    # uses the separately configured repair_provider below.
     reasoning = None
     orchestrator = Orchestrator(sessions, storage, settings, provider or BodhanProvider(settings.bodhan_api_key, settings.studio_provider_attempts), fonts, reasoning, ocr_provider or BodhanOCRProvider(settings.bodhan_ocr_api_key or settings.bodhan_api_key, settings.studio_provider_attempts))
     orchestrator.transliterator = transliteration_provider or BodhanTransliterationProvider(settings.bodhan_api_key, settings.studio_provider_attempts)
+    from app.providers.repair import AIRepairProvider
+    orchestrator.repair_provider = repair_provider or AIRepairProvider(settings)
     runner = JobRunner(sessions, orchestrator, settings.studio_workers)
 
     @asynccontextmanager
@@ -120,6 +131,8 @@ def create_app(settings=None, provider=None, reasoning=None, ocr_provider=None, 
     @app.get("/v1/health")
     def health():
         return {"status": "ok", "font_scripts": sorted(fonts.paths), "supported_languages": sorted(LANGUAGES), "max_upload_mb":settings.studio_max_upload_mb, "max_pages":settings.studio_max_pages,
+                "repair_configured": repair_provider is not None or bool(settings.openrouter_api_key and settings.studio_repair_model),
+                "repair_max_regions": settings.studio_repair_max_regions,
                 "transliteration_configured":bool(settings.bodhan_api_key) or transliteration_provider is not None, "translation_configured": bool(settings.bodhan_api_key) or provider is not None,
                 "ocr_configured": bool(settings.bodhan_ocr_api_key or settings.bodhan_api_key) or ocr_provider is not None,
                 "available_font_languages": sorted(language for language in LANGUAGES if fonts.resolve(language, "native") != "missing")}
@@ -171,6 +184,11 @@ def create_app(settings=None, provider=None, reasoning=None, ocr_provider=None, 
         with sessions() as session:
             require(session, Document, document_id)
             return [dict(record(p), source_preview=f"/v1/documents/{document_id}/artifacts/source-{p.number}.png", translated_preview=f"/v1/documents/{document_id}/artifacts/page-{p.number}.png") for p in session.scalars(select(Page).where(Page.document_id == document_id).order_by(Page.number))]
+
+    @app.get("/v1/documents/{document_id}/review")
+    async def review(document_id: str) -> dict:
+        # Share the PDF lock with rendering; never call a provider for review.
+        return await pdf_thread(review_snapshot, sessions, storage, document_id)
 
     @app.get("/v1/documents/{document_id}/blocks")
     def blocks(document_id: str, page_number: int | None = None, type: str | None = None) -> list[dict]:
@@ -312,6 +330,28 @@ def create_app(settings=None, provider=None, reasoning=None, ocr_provider=None, 
     async def revise(block_id: str, body: ReviseRequest):
         raise StudioError("reasoning_disabled", "Automatic revision is disabled. Edit the translation directly.", 410)
 
+    @app.post("/v1/documents/{document_id}/review/repair", status_code=202)
+    async def repair(document_id: str, body: RepairRequest):
+        ids = list(dict.fromkeys(body.region_ids))
+        if len(ids) > settings.studio_repair_max_regions:
+            raise StudioError("repair_limit", f"Select at most {settings.studio_repair_max_regions} regions per repair.", 422)
+        with sessions() as session:
+            doc = require(session, Document, document_id)
+            for job in session.scalars(select(Job).where(Job.document_id == document_id, Job.operation == "repair")):
+                if job.payload.get('request_id') == body.request_id:
+                    if (job.payload.get('version'), job.payload.get('region_ids'), job.payload.get('instruction')) != (body.version, ids, body.instruction):
+                        raise StudioError("repair_request_conflict", "This repair request ID was already used with different selections.", 409)
+                    return {"document_id":document_id, "job_id":job.id, "status":job.status}
+            if repair_provider is None and not (settings.openrouter_api_key and settings.studio_repair_model):
+                raise StudioError("repair_not_configured", "Set OPENROUTER_API_KEY and STUDIO_REPAIR_MODEL to enable AI repair.", 503)
+            snapshot = await pdf_thread(review_snapshot, sessions, storage, document_id)
+            if snapshot['version'] != body.version:
+                raise StudioError("stale_review", "The output has changed. Reload the review before requesting repairs.", 409)
+            known = {r['id'] for r in snapshot['regions']}
+            if any(identity not in known for identity in ids):
+                raise StudioError("invalid_repair_region", "One or more selected regions do not belong to this output.", 422)
+            return enqueue(session, doc, "repair", {**body.model_dump(), 'region_ids':ids, 'output':snapshot['output']})
+
     @app.post("/v1/documents/{document_id}/render", status_code=202)
     def render(document_id: str):
         with sessions() as session:
@@ -334,7 +374,7 @@ def create_app(settings=None, provider=None, reasoning=None, ocr_provider=None, 
         with sessions() as session:
             doc = require(session, Document, document_id)
             original_name, language = doc.filename, doc.target_language
-        if filename not in {"final.pdf", "draft.pdf", "structure.json", "translation.xlf", "layout-report.json"} and not __import__("re").fullmatch(r"(?:source|page)-\d+\.png", filename):
+        if filename not in {"final.pdf", "draft.pdf", "previous.pdf", "repair-report.json", "structure.json", "translation.xlf", "layout-report.json"} and not __import__("re").fullmatch(r"(?:source|page)-\d+\.png", filename):
             raise StudioError("not_found", "Artifact not found", 404)
         path = storage.path(document_id, filename)
         if not path.exists():

@@ -25,6 +25,12 @@ COMPARER_MODEL = "qwen/qwen3-vl-8b-instruct"
 DEFAULT_RUBRIC = Path(__file__).with_name("rubric.json")
 
 
+class JobFailure(RuntimeError):
+    def __init__(self, job):
+        self.code = job.get("error_code") or job["status"]
+        super().__init__(f"Studio job {job['status']}: {self.code}")
+
+
 def wait_job(client, response, timeout):
     if response.status_code != 202:
         raise RuntimeError(f"Studio rejected job (HTTP {response.status_code})")
@@ -37,13 +43,13 @@ def wait_job(client, response, timeout):
         if job["status"] in {"completed", "completed_with_issues"}:
             return job
         if job["status"] in {"failed", "cancelled"}:
-            raise RuntimeError(f"Studio job {job['status']}: {job.get('error_code')}")
+            raise JobFailure(job)
         time.sleep(0.2)
     client.post(f"/v1/jobs/{job_id}/cancel")
     raise RuntimeError("Studio job timed out and cancellation was requested")
 
 
-def translate_case(case, directory, settings, timeout, layout_mode):
+def translate_case(case, directory, settings, timeout, layout_mode, *, provider=None, ocr_provider=None):
     started = time.monotonic()
     candidate = directory / "candidate.pdf"
     metadata = directory / "translation.json"
@@ -57,7 +63,7 @@ def translate_case(case, directory, settings, timeout, layout_mode):
     isolated = settings.model_copy(update={
         "studio_data_dir": directory / "studio" / uuid.uuid4().hex,
         "studio_workers": 1, "studio_vision_review_enabled": False})
-    with TestClient(create_app(isolated)) as client:
+    with TestClient(create_app(isolated, provider=provider, ocr_provider=ocr_provider)) as client:
         response = client.post("/v1/documents", files={
             "file": ("source.pdf", (directory / "source.pdf").read_bytes(), "application/pdf")})
         inspection = wait_job(client, response, timeout)
@@ -70,6 +76,7 @@ def translate_case(case, directory, settings, timeout, layout_mode):
         result = dict(document_id=document, inspection_status=inspection["status"],
                       elapsed_seconds=round(time.monotonic()-started, 3),
                       translation_status=translation["status"], source_sha256=source_hash,
+                      translation_result=translation.get("result"),
                       layout_mode=layout_mode,
                       issues=client.get(f"/v1/documents/{document}/issues").json())
         write_json(metadata, result)

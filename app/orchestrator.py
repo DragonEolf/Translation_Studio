@@ -13,6 +13,7 @@ from app.agents.reorganiser import ReorganiserAgent
 from app.agents.checker import CheckerAgent
 from app.services.renderer import Renderer
 from app.services.cell_layout import CellLayout
+from app.services.table_alignment import TableAlignment
 from app.services.paragraph_flow import ParagraphFlow
 from copy import deepcopy
 from app.services.typography import TypographyPass, diagnostics
@@ -63,6 +64,9 @@ class Orchestrator:
             job = session.get(Job, job_id)
             document = session.get(Document, job.document_id)
             source = self.storage.path(document.id, "source.pdf")
+            if job.operation == "repair":
+                from app.services.ai_repair import repair_document
+                return await repair_document(self, session, document, job, cancel)
             if job.operation == "transliterate_preview":
                 suggestions=[]
                 words=job.payload['words']
@@ -377,7 +381,7 @@ class Orchestrator:
                     entries.append((block, translation, layout))
                 destination = self.storage.path(document_id, f"page-{page.number}.pdf")
                 renderer = Renderer(self.reorganiser.fonts)
-                checker = CheckerAgent()
+                checker = CheckerAgent(self.reorganiser.fonts)
                 renderer.render_page(source, page.number, entries, destination)
                 def review_layout():
                     issues = checker.run(source, destination, page.number, entries)
@@ -394,12 +398,16 @@ class Orchestrator:
                 before = review_layout()
                 snapshots = {b.id: {key: deepcopy(getattr(l, key)) for key in
                     ('bbox', 'font', 'font_size', 'line_breaks', 'fit_status')} for b, _, l in entries}
+                style_snapshots = {b.id: deepcopy(b.style) for b, _, _ in entries}
                 cell_changes = CellLayout(self.reorganiser.fonts, self.settings.studio_typography_min_font_pt).apply(entries, blocks, page, images)
                 paragraph_changes = ParagraphFlow(self.reorganiser.fonts, self.settings.studio_typography_min_font_pt).apply(entries, blocks, page, graphics)
                 adjusted = {'changed_blocks': [], 'refits': 0}
                 if self.settings.studio_typography_enabled:
                     adjusted = TypographyPass(self.reorganiser.fonts,self.settings.studio_typography_min_font_pt,self.settings.studio_typography_max_refits).apply(entries,page)
-                changes = cell_changes + paragraph_changes + adjusted['changed_blocks']
+                with fitz.open(source) as alignment_source:
+                    alignment_changes = TableAlignment(self.reorganiser.fonts).apply(
+                        alignment_source[page.number-1], entries, blocks, images)
+                changes = cell_changes + paragraph_changes + adjusted['changed_blocks'] + alignment_changes
                 checked = before
                 accepted = False
                 if changes:
@@ -416,6 +424,7 @@ class Orchestrator:
                         checked = candidate_issues
                     else:
                         for block, _, layout in entries:
+                            block.style = style_snapshots[block.id]
                             for key, value in snapshots[block.id].items():
                                 setattr(layout, key, value)
                         renderer.render_page(source, page.number, entries, destination)
@@ -447,6 +456,7 @@ class Orchestrator:
                     for b in blocks if b.id not in included)
                 layout_report['pages'].append({'page':page.number,
                     'cell_changes':cell_changes, 'paragraph_changes':paragraph_changes,
+                    'alignment_changes':alignment_changes,
                     'change_accepted':accepted, 'issues_before':len(before), 'issues_after':len(checked),
                     'issues_reduced':len(checked) < len(before),
                     'issue_counts_before':dict(Counter(i['code'] for i in before)),
