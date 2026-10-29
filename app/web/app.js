@@ -130,6 +130,7 @@ async function sourceNote() {
   $("document-note").hidden = false;
 }
 const issueGroups = [
+  {codes:["transliteration_incomplete"], text:"Pronunciation conversion was unavailable. The translated PDF is available with remaining English words unchanged."},
   {codes:["translation_truncated"], text:"Some translations remained incomplete after automatic recovery. Affected regions keep their source text and need review."},
   {codes:["passage_translation_split"], text:"Some translations were recovered using smaller passages. Review sentence flow and terminology."},
   {codes:["source_geometry_overlap"], text:"Some original text regions have overlapping boxes. Review these regions for visible overlap."},
@@ -201,6 +202,20 @@ function failureMessage(error) {
   return messages[error.code] || error.message || "Something went wrong while processing the PDF. Your original is unchanged.";
 }
 function showFailure(error) {
+  if (active?.phase === "preview" && !error.recoverable) {
+    finishedDocument = {documentId:active.documentId,language:active.language,layout:active.layout};
+    $("download").href = `/v1/documents/${active.documentId}/artifacts/final.pdf`;
+    $("download").hidden = false;
+    active = null; previewRequest = null; previewJobId = null; saveActive();
+    $("progress-wrap").hidden = true; $("cancel").hidden = true;
+    $("status-title").textContent = "Pronunciation preview could not finish";
+    $("status-detail").textContent = failureMessage(error) + " Your translated PDF is unchanged and available below.";
+    $("transliteration-message").textContent = failureMessage(error) + " You can retry the preview.";
+    $("generate-transliteration").hidden = false;
+    $("apply-transliteration").hidden = true;
+    $("new-document").hidden = false;
+    return;
+  }
   if (error.code === "job_cancelled") {
     active = null; saveActive(); resetResult();
     $("result").hidden = false; $("result").className = "result";

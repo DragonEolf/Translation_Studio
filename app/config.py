@@ -6,6 +6,8 @@ from pydantic import Field
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     openrouter_api_key: str = ""
+    studio_transliteration_fallback_enabled: bool = True
+    studio_transliteration_model: str = "openai/gpt-4.1-mini"
     studio_repair_model: str = "openai/gpt-4.1"
     studio_repair_max_regions: int = Field(default=20, ge=1, le=100)
     studio_repair_timeout_seconds: float = Field(default=60, ge=1, le=180)

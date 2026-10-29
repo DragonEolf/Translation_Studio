@@ -79,8 +79,13 @@ names (`VGF` sends `vee gee eff`); other words are sent as written. Pronunciatio
 are model suggestions and may be approximate. This does not expand acronyms or
 translate their meaning. Preview generation alone does not change the PDF.
 
-This uses `POST https://api.bodhan.ai/transliterate` with the existing
-`BODHAN_API_KEY`; no additional key setting is needed. Only selected words (or
+This first uses `POST https://api.bodhan.ai/transliterate` with the existing
+`BODHAN_API_KEY`. Some deployments return 404 for that documented route. If an
+OpenRouter key is configured, a phonetic-only fallback uses
+`STUDIO_TRANSLITERATION_MODEL` (default `openai/gpt-4.1-mini`). Disable it with
+`STUDIO_TRANSLITERATION_FALLBACK_ENABLED=false`. A missing route is remembered
+for five minutes to avoid repeating the failed request for every word. Auth
+failures do not switch providers. Only selected words (or
 letter names), not whole pages, are sent. URLs, emails, protected identifiers,
 numbers, common units and words split across style runs are excluded. English
 and Roman-script output do not offer this action. Text that remained in the
@@ -299,11 +304,14 @@ historical repair providers remain isolated for benchmark reproduction.
 
 Select **Transliterate remaining English** before starting, or send
 `"transliterate": true` with the translation request. For native Indic targets,
-the app translates first, calls Bodhan once per distinct eligible English word,
+the app translates first, obtains a pronunciation for each distinct eligible English word,
 then applies all replacements to text and styled runs before producing the PDF.
 Acronyms use English letter names. URLs, identifiers, numbers and units are
 protected. English and roman/codemix targets reject this option. A failed
-transliteration request fails the job without applying a partial set of replacements.
+transliteration step applies no partial replacements. Translation still renders
+and downloads with unchanged English words and a `transliteration_incomplete`
+warning. Selective preview failures also keep the previous PDF downloadable;
+retrying a terminal preview failure creates a fresh request ID.
 The existing selective preview/apply API remains available for later corrections.
 
 Auto mode allocates cell space even for short table paragraphs. Shared cell

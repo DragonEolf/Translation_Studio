@@ -75,7 +75,7 @@ class Orchestrator:
                     cancel.check()
                     body=await cancel.wait(self.transliterator.transliterate(translit.pronunciation_input(word),job.payload['target_language']))
                     replacement=translit.validate_replacement(body.get('transliteration'))
-                    suggestions.append({'word':word,'replacement':replacement})
+                    suggestions.append({'word':word,'replacement':replacement,'provider':body.get('provider','configured')})
                     job.progress=(index+1)/len(words)
                     job.payload={**job.payload,'suggestions':list(suggestions)}
                     session.commit()
@@ -137,8 +137,10 @@ class Orchestrator:
                 session.commit()
                 return "completed_with_issues" if session.scalar(select(Issue.id).where(Issue.document_id==document.id,Issue.resolution!="resolved")) else "completed"
             if job.operation == "translate":
+                for issue in session.scalars(select(Issue).where(Issue.document_id==document.id,Issue.stage=='transliteration')):
+                    issue.resolution='resolved'
                 for page in session.scalars(select(Page).where(Page.document_id==document.id)):
-                    page.metadata_json={**page.metadata_json,'layout_mode':job.payload.get('layout_mode','spans')}
+                    page.metadata_json={**page.metadata_json,'layout_mode':job.payload.get('layout_mode','spans'),'layout_policy_version':1}
                 session.commit()
                 await pdf_thread(self.refresh_geometry,document.id,True)
                 session.expire_all()
@@ -201,7 +203,16 @@ class Orchestrator:
                     finally:
                         await stream.aclose()
             if job.operation == "translate" and job.payload.get("transliterate"):
-                await self.automatic_transliteration(session, document, job, cancel)
+                try:
+                    await self.automatic_transliteration(session, document, job, cancel)
+                except StudioError as exc:
+                    # No replacements are saved until every pronunciation succeeds.
+                    # Optional transliteration must not hide a valid translation.
+                    session.add(Issue(document_id=document.id,code='transliteration_incomplete',
+                        severity='warning',stage='transliteration',
+                        message='English-word pronunciations could not be applied. The translated PDF retains those words. '+exc.message))
+                    job.payload={**job.payload,'transliteration_error':{'code':exc.code,'message':exc.message}}
+                    session.commit()
             cancel.check()
             layout_report = await pdf_thread(self.render, document.id, job.id if job.operation=="translate" and not self.settings.studio_cache_enabled else None, cancel)
             cancel.check()
@@ -235,6 +246,8 @@ class Orchestrator:
                 translit.pronunciation_input(word), document.target_language))
             replacements[word] = translit.validate_replacement(body.get('transliteration'))
             stats['calls'] += 1
+            stats.setdefault('providers',{}).setdefault(body.get('provider','configured'),0)
+            stats['providers'][body.get('provider','configured')]+=1
             job.progress = .7 + .1 * (index + 1) / max(1, len(words))
             job.payload = {**job.payload, 'transliteration_stats': dict(stats)}
             session.commit()

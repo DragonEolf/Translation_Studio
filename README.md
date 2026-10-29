@@ -64,7 +64,8 @@ Edit `.env` locally. Do not commit credentials.
 | `BODHAN_API_KEY` | Required for live translation; also used for transliteration. |
 | `BODHAN_OCR_API_KEY` | Optional separate OCR key; otherwise OCR uses `BODHAN_API_KEY`. The selected key needs access to `indic-ocr`. |
 | `STUDIO_FONT_DIR=./fonts` | Included in the example configuration; enables the bundled Indic fonts. |
-| `OPENROUTER_API_KEY` | Required only for selected-region AI repair. |
+| `OPENROUTER_API_KEY` | Used for selected-region AI repair and the optional phonetic transliteration fallback. |
+| `STUDIO_TRANSLITERATION_MODEL` | Phonetic fallback model; defaults to `openai/gpt-4.1-mini`. Disable fallback with `STUDIO_TRANSLITERATION_FALLBACK_ENABLED=false`. |
 | `STUDIO_REPAIR_MODEL` | Vision-capable OpenRouter model; defaults to `openai/gpt-4.1`. |
 
 The repository includes fonts. If they are missing from your checkout, restore
@@ -212,7 +213,9 @@ Useful benchmark guides:
 - Processing files and revisions are stored locally. Translation text is sent to
   Bodhan; scanned page images are sent to its OCR service. Requested AI repair
   sends selected text and source/output image crops through OpenRouter. These
-  external operations use your accounts and may incur charges.
+  external operations use your accounts and may incur charges. If Bodhan’s dedicated
+  transliteration route returns 404, the configured OpenRouter fallback receives
+  eligible English words or spoken letter names, without page images.
 - The default server binds to localhost. It has no user authentication or tenant
   isolation and should not be exposed publicly as a hosted service without those
   controls.

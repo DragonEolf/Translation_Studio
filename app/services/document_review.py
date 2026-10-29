@@ -82,4 +82,8 @@ def review_snapshot(sessions, storage, document_id):
         version = hashlib.sha256(json.dumps([output, stat.st_mtime_ns, stat.st_size, regions], sort_keys=True).encode()).hexdigest()[:20]
         return {"document_id": document_id, "filename": doc.filename, "output": output,
                 "version": version, "pages": pages, "regions": regions,
-                "previous_available": storage.path(document_id,"previous.pdf").exists()}
+                "previous_available": storage.path(document_id,"previous.pdf").exists(),
+                "regroup_recommended": any(p.metadata_json.get('layout_mode') in {'auto','paragraphs'}
+                    and p.metadata_json.get('extraction_method','digital')=='digital'
+                    and p.metadata_json.get('layout_policy_version',0)<1
+                    for p in session.scalars(select(Page).where(Page.document_id==document_id)))}

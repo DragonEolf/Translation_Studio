@@ -302,6 +302,8 @@
       if (ticket !== generation) return;
       if (!data.pages.length) throw new Error("No pages are available for review.");
       snapshot = data; decisions = {}; selected = null;
+      el("review-layout-note").hidden = !data.regroup_recommended;
+      el("review-layout-note").textContent = data.regroup_recommended ? "This output used the earlier layout. Run a fresh translation in Automatic or Improve readability to rebuild paragraphs. Rendering saved line translations alone keeps their existing regions." : "";
       try {
         const saved = JSON.parse(sessionStorage.getItem(storageKey()));
         if (saved?.version === data.version) for (const region of data.regions) {

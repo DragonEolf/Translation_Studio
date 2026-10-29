@@ -61,7 +61,13 @@ def test_transliteration_failure_does_not_apply_partial_replacements(tmp_path):
         upload = c.post('/v1/documents', files={'file': ('test.pdf', data)})
         doc = upload.json()['document_id']; wait(c, upload)
         result = wait(c, c.post(f'/v1/documents/{doc}/translations', json={'target_language':'ta', 'transliterate':True}))
-        assert result['status'] == 'failed'
+        assert result['status'] == 'completed_with_issues'
+        assert result['payload']['transliteration_error']['code']=='provider_unavailable'
+        pdf=c.get(f'/v1/documents/{doc}/artifacts/final.pdf')
+        assert pdf.status_code==200
+        with fitz.open(stream=pdf.content,filetype='pdf') as rendered:
+            assert 'VGF API' in rendered[0].get_text()
+        assert any(i['code']=='transliteration_incomplete' for i in c.get(f'/v1/documents/{doc}/issues').json())
         assert c.get(f'/v1/documents/{doc}/blocks').json()[0]['translation']['text'] == 'VGF API'
 
 

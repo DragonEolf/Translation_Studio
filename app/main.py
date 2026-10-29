@@ -22,7 +22,7 @@ from app.providers.ocr import BodhanOCRProvider
 from app.services.storage import Storage
 from app.services.text_fitter import FontRegistry
 from app.services.job_runner import JobRunner
-from app.providers.transliteration import BodhanTransliterationProvider
+from app.providers.transliteration import BodhanTransliterationProvider, OpenRouterPhoneticProvider
 from app.services import transliteration as translit
 
 
@@ -71,7 +71,9 @@ def create_app(settings=None, provider=None, reasoning=None, ocr_provider=None, 
     # uses the separately configured repair_provider below.
     reasoning = None
     orchestrator = Orchestrator(sessions, storage, settings, provider or BodhanProvider(settings.bodhan_api_key, settings.studio_provider_attempts), fonts, reasoning, ocr_provider or BodhanOCRProvider(settings.bodhan_ocr_api_key or settings.bodhan_api_key, settings.studio_provider_attempts))
-    orchestrator.transliterator = transliteration_provider or BodhanTransliterationProvider(settings.bodhan_api_key, settings.studio_provider_attempts)
+    phonetic_fallback = (OpenRouterPhoneticProvider(settings.openrouter_api_key,settings.studio_transliteration_model)
+                         if settings.studio_transliteration_fallback_enabled and settings.openrouter_api_key else None)
+    orchestrator.transliterator = transliteration_provider or BodhanTransliterationProvider(settings.bodhan_api_key, settings.studio_provider_attempts, fallback=phonetic_fallback)
     from app.providers.repair import AIRepairProvider
     orchestrator.repair_provider = repair_provider or AIRepairProvider(settings)
     runner = JobRunner(sessions, orchestrator, settings.studio_workers)
@@ -133,7 +135,8 @@ def create_app(settings=None, provider=None, reasoning=None, ocr_provider=None, 
         return {"status": "ok", "font_scripts": sorted(fonts.paths), "supported_languages": sorted(LANGUAGES), "max_upload_mb":settings.studio_max_upload_mb, "max_pages":settings.studio_max_pages,
                 "repair_configured": repair_provider is not None or bool(settings.openrouter_api_key and settings.studio_repair_model),
                 "repair_max_regions": settings.studio_repair_max_regions,
-                "transliteration_configured":bool(settings.bodhan_api_key) or transliteration_provider is not None, "translation_configured": bool(settings.bodhan_api_key) or provider is not None,
+                "layout_policy_version":1, "transliteration_fallback_configured":phonetic_fallback is not None,
+                "transliteration_configured":bool(settings.bodhan_api_key) or phonetic_fallback is not None or transliteration_provider is not None, "translation_configured": bool(settings.bodhan_api_key) or provider is not None,
                 "ocr_configured": bool(settings.bodhan_ocr_api_key or settings.bodhan_api_key) or ocr_provider is not None,
                 "available_font_languages": sorted(language for language in LANGUAGES if fonts.resolve(language, "native") != "missing")}
 

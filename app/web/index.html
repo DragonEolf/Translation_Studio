@@ -37,7 +37,7 @@
           </div>
           <p id="layout-help" class="field-hint">Paragraph reflow is experimental; dense pages can still need smaller text or review.</p>
         </fieldset>
-        <label class="transliteration-option" for="auto-transliterate"><input id="auto-transliterate" type="checkbox"><span><strong>Transliterate remaining English</strong><small>After translation, pronounce remaining English words and abbreviations in the selected script. Bodhan applies them before preparing your PDF.</small></span></label>
+        <label class="transliteration-option" for="auto-transliterate"><input id="auto-transliterate" type="checkbox"><span><strong>Transliterate remaining English</strong><small>After translation, pronounce remaining English words and abbreviations in the selected script. Bodhan applies them before preparing your PDF. If its endpoint is unavailable, eligible words may be sent to the configured OpenRouter phonetic service.</small></span></label>
         <button id="submit" type="submit" disabled><span id="submit-label">Translate PDF</span><span aria-hidden="true">→</span></button>
         <p class="account-note">Text is sent to your configured Bodhan service; scanned pages are sent as images for OCR. Usage charges may apply.</p>
       </form>
@@ -52,7 +52,7 @@
         <button id="see-issues" type="button" class="secondary-button" aria-controls="document-review" aria-expanded="false" hidden>See issues · compare PDFs</button>
         <button id="transliterate" type="button" class="secondary-button" hidden>Transliterate remaining English</button>
         <section id="transliteration-panel" class="transliteration-panel" aria-labelledby="transliteration-title" hidden>
-          <h3 id="transliteration-title">Choose words to pronounce in your language</h3>
+          <h3 id="transliteration-title">Choose words to pronounce in your language</h3><p class="field-hint">Selected words use Bodhan or the configured OpenRouter phonetic fallback. Previewing does not change your PDF.</p>
           <p class="field-hint">Choose up to 20 words or abbreviations. Acronyms use English letter names. Preview each pronunciation before applying; names can be ambiguous. Selected words are sent to Bodhan.</p>
           <fieldset id="transliteration-choices"><legend class="field-label">Remaining English</legend><div id="transliteration-words"></div></fieldset>
           <p id="transliteration-message" class="field-hint" role="status" aria-live="polite"></p>
@@ -71,6 +71,7 @@
   <section id="document-review" class="document-review" aria-labelledby="review-heading" hidden>
     <div class="review-header"><div><p class="eyebrow">Document review</p><h2 id="review-heading" tabindex="-1">A closer look, side by side.</h2><p id="review-filename"></p></div><button id="close-review" type="button" class="secondary-button">Close review</button></div>
     <p class="review-explainer">Compare each highlighted region with the original. Automatic checks flag layout and processing problems; they do not verify translation accuracy.</p>
+    <p id="review-layout-note" class="review-explainer" hidden></p>
     <p id="review-loading" role="status" aria-live="polite"></p>
     <button id="retry-review" type="button" class="text-button" hidden>Try loading the review again</button>
     <div id="review-content" hidden>

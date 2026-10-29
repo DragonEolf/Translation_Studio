@@ -73,7 +73,10 @@ async function setup(scenario = {}) {
       if (state.losePreview) { state.losePreview=false; state.originalPreviewId=state.previewPayload.request_id; return route.abort(); }
       return json({job_id:'preview'},202);
     }
-    if (pathname === '/v1/jobs/preview') return json({id:'preview',status:'completed',progress:1,payload:{suggestions:state.previewPayload.words.map(word=>({word,replacement:word==='VGF'?'வீ ஜி எஃப்':'ஏ பி ஐ'}))}});
+    if (pathname === '/v1/jobs/preview') {
+      if (state.previewFails) { state.previewFails=false; return json({id:'preview',status:'failed',error_code:'transliteration_endpoint_unavailable',error_message:'Transliteration endpoint unavailable'}); }
+      return json({id:'preview',status:'completed',progress:1,payload:{suggestions:state.previewPayload.words.map(word=>({word,replacement:word==='VGF'?'வீ ஜி எஃப்':'ஏ பி ஐ'}))}});
+    }
     if (pathname === '/v1/documents/doc/transliteration-apply') { state.applyPayload=route.request().postDataJSON(); return json({job_id:'render'},202); }
     if (pathname === '/v1/jobs/render') return json({status:'completed',progress:1});
     if (pathname === '/v1/jobs/translate/cancel') {
@@ -242,6 +245,29 @@ async function test(name, scenario, fn) {
     await page.waitForFunction(()=>document.querySelector('#repair-status').textContent.includes('1 region repaired'));
     assert.equal(state.repairCalls,1);
     await page.locator('.review-repair').screenshot({path:path.join(output,'ai-repair-and-download.png')});
+  });
+  await test('failed pronunciation preview keeps PDF available and retry uses fresh request',{previewFails:true},async ({page,state}) => {
+    await page.locator('#language').selectOption('ta');
+    await start(page); await completed(page);
+    await page.locator('#transliterate').click();
+    await page.locator('#transliteration-words input').first().check();
+    await page.locator('#generate-transliteration').click();
+    await page.waitForFunction(()=>document.querySelector('#status-title').textContent.includes('preview could not finish'));
+    const failedId=state.previewPayload.request_id;
+    assert.equal(await page.locator('#download').isVisible(),true);
+    await page.locator('#generate-transliteration').click();
+    await page.locator('#apply-transliteration').waitFor({state:'visible'});
+    assert.notEqual(state.previewPayload.request_id,failedId);
+  });
+  await test('old output explains that a fresh paragraph translation is needed',{},async ({page,state}) => {
+    state.review=reviewFixture();state.review.regroup_recommended=true;
+    await start(page);await completed(page);await page.locator('#see-issues').click();
+    await page.locator('#review-layout-note').waitFor({state:'visible'});
+    assert.match(await page.locator('#review-layout-note').innerText(),/fresh translation/);
+    state.review.regroup_recommended=false;
+    await page.locator('#close-review').click();await page.locator('#see-issues').click();
+    await page.locator('#review-content').waitFor({state:'visible'});
+    assert.equal(await page.locator('#review-layout-note').isVisible(),false);
   });
   await test('review retries and missing page previews',{reviewFails:true,brokenPreview:true},async ({page}) => {
     await start(page); await completed(page); await page.locator('#see-issues').click();

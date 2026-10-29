@@ -67,3 +67,30 @@ correctness for every PDF or replace visual review of dense/ambiguous documents.
 Reproduce the source audit with `python -m scripts.audit_layout_policy --sources
 PATH_TO_PDFS --output NEW_REPORT.json`, and see [the policy guide](layout-policy.md)
 for the optimization rules and limits.
+
+## October 30: transliteration and running-server verification
+
+The dedicated Bodhan `/transliterate` route returned HTTP 404 in a synthetic live
+check. A chat-route probe returned a meaning translation for the word `computer`,
+so that route is deliberately not used as a pronunciation workaround. The
+configured phonetic fallback (`openai/gpt-4.1-mini` through OpenRouter) was tested
+on synthetic words/letter names in Tamil and Hindi. It returned native-script
+pronunciations; no private document text or images were sent for these checks.
+
+The regression suite passes **344 Python tests** and all browser checks, including
+terminal-preview retries with fresh request IDs, preserved PDF downloads after
+preview failure, and a notice for outputs from the earlier layout version.
+Automatic transliteration failure now leaves the translation downloadable with
+a warning and applies no partial pronunciation replacements.
+
+The local server was found to predate the layout-policy update. It was restarted
+while no jobs were active, then checked through its live API. A synthetic PDF
+containing three separate extraction blocks was translated to Hindi in Automatic
+mode: the running app produced one paragraph region, recorded all three source
+blocks, completed without issues, and served the final PDF. Health reports layout
+policy version 1 and configured phonetic fallback. Existing source files, outputs
+and translation history were retained.
+
+A separate local Hindi layout replay preserved all saved translation text and
+rendered eight body paragraphs at 11 pt. This is fitting evidence only; it makes
+no claim that the saved wording is linguistically correct.

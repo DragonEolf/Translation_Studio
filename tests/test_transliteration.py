@@ -119,3 +119,42 @@ def test_apply_rejects_stale_preview(tmp_path):
             translation.text+=' changed';session.commit()
         result=client.post(f'/v1/documents/{doc}/transliteration-apply',json={'preview_job_id':preview['id'],'words':['VGF']})
         assert result.status_code==409 and result.json()['error']['code']=='stale_transliteration_preview'
+
+
+@pytest.mark.anyio
+async def test_missing_bodhan_route_switches_to_phonetic_fallback_and_skips_repeated_404s():
+    primary=[]
+    def handler(request):primary.append(request);return httpx.Response(404,json={'detail':'Not Found'})
+    fallback=Pronunciations()
+    p=BodhanTransliterationProvider('key',transport=httpx.MockTransport(handler),fallback=fallback)
+    assert (await p.transliterate('vee gee eff','ta'))['transliteration']=='வீ ஜி எஃப்'
+    await p.transliterate('ay pee eye','ta')
+    assert len(primary)==1 and len(fallback.calls)==2
+
+
+@pytest.mark.anyio
+async def test_404_without_fallback_is_actionable_and_auth_errors_never_fallback():
+    for status,code in [(404,'transliteration_endpoint_unavailable'),(401,'transliteration_authentication_failed')]:
+        fallback=Pronunciations() if status==401 else None
+        p=BodhanTransliterationProvider('key',transport=httpx.MockTransport(lambda _:httpx.Response(status)),fallback=fallback)
+        with pytest.raises(StudioError) as error:await p.transliterate('API','ta')
+        assert error.value.code==code
+        if fallback:assert fallback.calls==[]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('value,finish',[('கம்ப்யூட்டர்','stop'),('கணினி','length'),('computer','stop'),('कम्प्यूटर','stop')])
+async def test_phonetic_fallback_validates_completion_and_target_script(value,finish):
+    from app.providers.transliteration import OpenRouterPhoneticProvider
+    requests=[]
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200,json={'choices':[{'finish_reason':finish,'message':{'content':json.dumps({'transliteration':value})}}]})
+    p=OpenRouterPhoneticProvider('secret',transport=httpx.MockTransport(handler))
+    if value=='கம்ப்யூட்டர்' and finish=='stop':
+        assert (await p.transliterate('computer','ta'))['provider']=='openrouter-phonetic'
+    else:
+        with pytest.raises(StudioError):await p.transliterate('computer','ta')
+    assert requests[0]['model']=='openai/gpt-4.1-mini'
+    assert 'not meaning' in requests[0]['messages'][0]['content']
+    assert json.loads(requests[0]['messages'][1]['content'])['text']=='computer'
