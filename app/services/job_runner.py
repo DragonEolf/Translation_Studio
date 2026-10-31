@@ -1,8 +1,12 @@
+"""Single-process asynchronous job queue with restart recovery and cancellation."""
+
 import asyncio
 import logging
+
 from sqlalchemy import select
-from app.models import Job, Document
+
 from app.config import StudioError
+from app.models import Document, Job
 from app.services.cancellation import CancellationToken, JobCancelled
 
 
@@ -37,13 +41,15 @@ class JobRunner:
     async def loop(self):
         while True:
             with self.sessions() as session:
-                job = session.scalar(select(Job).where(Job.status == "queued").order_by(Job.created_at))
+                job = session.scalar(
+                    select(Job).where(Job.status == "queued").order_by(Job.created_at)
+                )
                 job_id = job.id if job else None
                 if job:
                     job.status = "running"
                     session.commit()
             if not job_id:
-                await asyncio.sleep(.1)
+                await asyncio.sleep(0.1)
                 continue
             token = CancellationToken()
             self.active[job_id] = token
@@ -65,12 +71,22 @@ class JobRunner:
                 raise
             except Exception as exc:
                 if not isinstance(exc, StudioError):
-                    logging.getLogger(__name__).exception("PDF processing failed for job %s", job_id)
+                    logging.getLogger(__name__).exception(
+                        "PDF processing failed for job %s", job_id
+                    )
                 with self.sessions() as session:
                     job = session.get(Job, job_id)
                     job.status = "cancelled" if token.event.is_set() else "failed"
-                    job.error_code = exc.code if isinstance(exc, StudioError) else "processing_failed"
-                    job.error_message = exc.message if isinstance(exc, StudioError) else "Processing failed; inspect server diagnostics"
+                    job.error_code = (
+                        exc.code
+                        if isinstance(exc, StudioError)
+                        else "processing_failed"
+                    )
+                    job.error_message = (
+                        exc.message
+                        if isinstance(exc, StudioError)
+                        else "Processing failed; inspect server diagnostics"
+                    )
                     session.get(Document, job.document_id).status = job.status
                     session.commit()
 

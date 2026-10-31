@@ -1,4 +1,5 @@
 """Visual comparison with validated candidate-page coordinates and rubric totals."""
+
 import base64
 import hashlib
 import json
@@ -26,7 +27,7 @@ class Rubric(BaseModel):
     def valid_total(cls, criteria):
         if len({c.id for c in criteria}) != len(criteria):
             raise ValueError("Duplicate rubric criteria")
-        if abs(sum(c.max_points for c in criteria)-100) > 0.001:
+        if abs(sum(c.max_points for c in criteria) - 100) > 0.001:
             raise ValueError("Rubric points must sum to 100")
         return criteria
 
@@ -64,11 +65,30 @@ def fingerprint(paths, model, rubric, *, judge_prompt=JUDGE):
     return digest.hexdigest()
 
 
-def compare(router, source, reference, candidate, language, rubric, model, output,
-            *, judge_prompt=JUDGE):
-    content = [{"type": "text", "text": json.dumps({
-        "target_language": language, "rubric": rubric.model_dump(),
-        "coordinate_system": "candidate PDF points, top-left origin; page numbers start at 1"})}]
+def compare(
+    router,
+    source,
+    reference,
+    candidate,
+    language,
+    rubric,
+    model,
+    output,
+    *,
+    judge_prompt=JUDGE,
+):
+    content = [
+        {
+            "type": "text",
+            "text": json.dumps(
+                {
+                    "target_language": language,
+                    "rubric": rubric.model_dump(),
+                    "coordinate_system": "candidate PDF points, top-left origin; page numbers start at 1",
+                }
+            ),
+        }
+    ]
     dimensions = []
     regions = {}
     documents = [("REFERENCE", reference), ("CANDIDATE", candidate)]
@@ -77,7 +97,9 @@ def compare(router, source, reference, candidate, language, rubric, model, outpu
     for label, path in documents:
         with fitz.open(path) as pdf:
             if not 1 <= len(pdf) <= 12:
-                raise ValueError("Comparer accepts 1-12 pages per document; no pages are silently skipped")
+                raise ValueError(
+                    "Comparer accepts 1-12 pages per document; no pages are silently skipped"
+                )
             for number, page in enumerate(pdf, 1):
                 dims = [page.rect.width, page.rect.height]
                 if label == "CANDIDATE":
@@ -87,42 +109,92 @@ def compare(router, source, reference, candidate, language, rubric, model, outpu
                         box = fitz.Rect(block[:4]) & page.rect
                         if box.is_empty or block[6] != 0:
                             continue
-                        rid = f"p{number}-text{index+1}"
-                        entry = dict(region_id=rid, page=number, bbox=list(box), text=block[4])
+                        rid = f"p{number}-text{index + 1}"
+                        entry = dict(
+                            region_id=rid, page=number, bbox=list(box), text=block[4]
+                        )
                         regions[rid] = entry
                         page_regions.append(entry)
                     for row in range(4):
                         for col in range(2):
-                            rid = f"p{number}-grid{row*2+col+1}"
-                            entry = dict(region_id=rid, page=number, bbox=[
-                                col*dims[0]/2, row*dims[1]/4,
-                                (col+1)*dims[0]/2, (row+1)*dims[1]/4])
+                            rid = f"p{number}-grid{row * 2 + col + 1}"
+                            entry = dict(
+                                region_id=rid,
+                                page=number,
+                                bbox=[
+                                    col * dims[0] / 2,
+                                    row * dims[1] / 4,
+                                    (col + 1) * dims[0] / 2,
+                                    (row + 1) * dims[1] / 4,
+                                ],
+                            )
                             regions[rid] = entry
                             page_regions.append(entry)
-                    content.append({"type": "text", "text": json.dumps(
-                        {"candidate_regions": page_regions}, ensure_ascii=False)})
+                    content.append(
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {"candidate_regions": page_regions}, ensure_ascii=False
+                            ),
+                        }
+                    )
                     # Overlay measured text-region IDs for visual grounding. Original PDF is untouched.
                     for entry in page_regions:
                         if "text" not in entry:
                             continue
                         box = fitz.Rect(entry["bbox"])
-                        page.draw_rect(box, color=(0.1, 0.3, 0.9), width=0.4, overlay=True)
-                        page.insert_text((box.x0, max(7, box.y0-2)), entry["region_id"],
-                                         fontsize=6, color=(0.1, 0.3, 0.9), overlay=True)
+                        page.draw_rect(
+                            box, color=(0.1, 0.3, 0.9), width=0.4, overlay=True
+                        )
+                        page.insert_text(
+                            (box.x0, max(7, box.y0 - 2)),
+                            entry["region_id"],
+                            fontsize=6,
+                            color=(0.1, 0.3, 0.9),
+                            overlay=True,
+                        )
                 # Send actual rasterized PDF pages, not only their text or JSON recipe.
                 png = page.get_pixmap(dpi=120).tobytes("png")
-                content.extend([{"type": "text", "text": json.dumps({
-                    "document": label, "page": number, "pdf_dimensions_points": dims,
-                    "image_dimensions_pixels": [round(dims[0]*120/72), round(dims[1]*120/72)],
-                    "extracted_text": page.get_text()[:30000]}, ensure_ascii=False)},
-                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,"+
-                     base64.b64encode(png).decode("ascii")}}])
-    answer, usage = router.complete(model, judge_prompt, content, Assessment.model_json_schema(), 6000)
+                content.extend(
+                    [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {
+                                    "document": label,
+                                    "page": number,
+                                    "pdf_dimensions_points": dims,
+                                    "image_dimensions_pixels": [
+                                        round(dims[0] * 120 / 72),
+                                        round(dims[1] * 120 / 72),
+                                    ],
+                                    "extracted_text": page.get_text()[:30000],
+                                },
+                                ensure_ascii=False,
+                            ),
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "data:image/png;base64,"
+                                + base64.b64encode(png).decode("ascii")
+                            },
+                        },
+                    ]
+                )
+    answer, usage = router.complete(
+        model, judge_prompt, content, Assessment.model_json_schema(), 6000
+    )
     # Keep the raw response even when semantic validation rejects it.
-    (output / "comparison-response.json").write_text(json.dumps({"response": answer, **usage}, ensure_ascii=False, indent=2))
+    (output / "comparison-response.json").write_text(
+        json.dumps({"response": answer, **usage}, ensure_ascii=False, indent=2)
+    )
     assessment = Assessment.model_validate_json(answer)
     maxima = {c.id: c.max_points for c in rubric.criteria}
-    if len(assessment.criteria) != len(maxima) or {c.criterion for c in assessment.criteria} != maxima.keys():
+    if (
+        len(assessment.criteria) != len(maxima)
+        or {c.criterion for c in assessment.criteria} != maxima.keys()
+    ):
         raise ValueError("Comparer returned missing or repeated rubric criteria")
     for criterion in assessment.criteria:
         if criterion.points > maxima[criterion.criterion]:
@@ -130,21 +202,34 @@ def compare(router, source, reference, candidate, language, rubric, model, outpu
     issues = []
     for issue in assessment.issues:
         if issue.criterion not in maxima or issue.region_id not in regions:
-            raise ValueError("Comparer referenced an unknown criterion or candidate region")
+            raise ValueError(
+                "Comparer referenced an unknown criterion or candidate region"
+            )
         region = regions[issue.region_id]
-        issues.append(dict(**issue.model_dump(), page=region["page"], bbox=region["bbox"]))
-    result = dict(score=round(sum(c.points for c in assessment.criteria), 2),
-                  criteria=[c.model_dump() for c in assessment.criteria], issues=issues,
-                  rubric=rubric.model_dump(), model=usage["model"],
-                  usage=usage["usage"],
-                  fingerprint=fingerprint([path for _, path in documents], model, rubric,
-                                          judge_prompt=judge_prompt),
-                  bbox_units="PDF points", bbox_origin="top-left", bbox_document="candidate.pdf",
-                  assessment_type="automated, not human-validated")
-    (output / "evaluation.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
+        issues.append(
+            dict(**issue.model_dump(), page=region["page"], bbox=region["bbox"])
+        )
+    result = dict(
+        score=round(sum(c.points for c in assessment.criteria), 2),
+        criteria=[c.model_dump() for c in assessment.criteria],
+        issues=issues,
+        rubric=rubric.model_dump(),
+        model=usage["model"],
+        usage=usage["usage"],
+        fingerprint=fingerprint(
+            [path for _, path in documents], model, rubric, judge_prompt=judge_prompt
+        ),
+        bbox_units="PDF points",
+        bbox_origin="top-left",
+        bbox_document="candidate.pdf",
+        assessment_type="automated, not human-validated",
+    )
+    (output / "evaluation.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2)
+    )
     with fitz.open(candidate) as pdf:
         for issue in issues:
-            annot = pdf[issue["page"]-1].add_rect_annot(fitz.Rect(issue["bbox"]))
+            annot = pdf[issue["page"] - 1].add_rect_annot(fitz.Rect(issue["bbox"]))
             annot.set_colors(stroke=(1, 0, 0))
             annot.set_info(content=f"{issue['criterion']}: {issue['improvement']}")
             annot.update()

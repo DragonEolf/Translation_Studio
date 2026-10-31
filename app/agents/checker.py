@@ -1,23 +1,27 @@
-import re
+"""Check rendered text, protected values, geometry, and changes outside replaced regions."""
+
 import math
+import re
 import unicodedata
+
 import numpy as np
 import pymupdf as fitz
-from app.agents.translator import LITERALS
-from app.services.rich_text import literal_source
-from app.services.ocr_notation import display_text, has_unrendered_notation
 
+from app.agents.translator import LITERALS
+from app.services.ocr_notation import display_text, has_unrendered_notation
+from app.services.rich_text import literal_source
 
 # PDF font extraction may return presentation ligatures or their expanded
 # spelling. Only fold Latin ligatures; NFKC would also erase meaningful math
 # distinctions such as superscript digits.
-LIGATURES = str.maketrans({chr(c): unicodedata.normalize('NFKC', chr(c))
-                         for c in range(0xfb00, 0xfb07)})
+LIGATURES = str.maketrans(
+    {chr(c): unicodedata.normalize("NFKC", chr(c)) for c in range(0xFB00, 0xFB07)}
+)
 
 
 def normalized(text):
     text = text.translate(LIGATURES)
-    return re.sub(r"[\s\u200b-\u200d\ufeff]+", "", unicodedata.normalize("NFC",text))
+    return re.sub(r"[\s\u200b-\u200d\ufeff]+", "", unicodedata.normalize("NFC", text))
 
 
 class CheckerAgent:
@@ -26,27 +30,58 @@ class CheckerAgent:
 
     def run(self, source, rendered, number, entries):
         issues = []
+
         def add(code, message, block=None, severity="error"):
-            issues.append({"code": code, "message": message, "block_id": block.id if block else None, "page_number": number, "stage": "checker", "severity":severity})
+            issues.append(
+                {
+                    "code": code,
+                    "message": message,
+                    "block_id": block.id if block else None,
+                    "page_number": number,
+                    "stage": "checker",
+                    "severity": severity,
+                }
+            )
+
         with fitz.open(source) as original, fitz.open(rendered) as output:
-            src, dst = original[number-1], output[0]
+            src, dst = original[number - 1], output[0]
             textpage = dst.get_textpage()
-            mask = np.ones((math.ceil(src.rect.height), math.ceil(src.rect.width)), dtype=bool)
+            mask = np.ones(
+                (math.ceil(src.rect.height), math.ceil(src.rect.width)), dtype=bool
+            )
             for block, translation, layout in entries:
                 if has_unrendered_notation(block, translation.text):
-                    add("unsupported_ocr_notation", "OCR math notation is unsupported or malformed; verify the displayed expression", block, severity="warning")
-                if block.style.get("ocr") and block.confidence < .7:
-                    add("ocr_low_confidence", "OCR region detection confidence is low; verify source transcription",block)
+                    add(
+                        "unsupported_ocr_notation",
+                        "OCR math notation is unsupported or malformed; verify the displayed expression",
+                        block,
+                        severity="warning",
+                    )
+                if block.style.get("ocr") and block.confidence < 0.7:
+                    add(
+                        "ocr_low_confidence",
+                        "OCR region detection confidence is low; verify source transcription",
+                        block,
+                    )
                 if layout.fit_status != "fitted":
                     messages = {
                         "ocr_overlap_review_required": "Small OCR expression overlaps a larger passage and may be a duplicate or misread; separate replacement skipped, source retained for review",
-                        "overflow": "Translation is available but cannot fit in its region; source text retained for review" if block.style.get("ocr") else "Source text retained; manual review required",
+                        "overflow": "Translation is available but cannot fit in its region; source text retained for review"
+                        if block.style.get("ocr")
+                        else "Source text retained; manual review required",
                         "signature_review_required": "Original signature region retained; isolate printed text from handwriting before translating",
                         "unsegmented_table_row": "Source row retained: separate table columns into cells before rendering translation",
                     }
-                    message = messages.get(layout.fit_status, "Source text retained; manual review required")
+                    message = messages.get(
+                        layout.fit_status,
+                        "Source text retained; manual review required",
+                    )
                     if layout.fit_status == "overflow":
-                        reason = "insufficient cell height at the minimum font size" if block.style.get("table_cell_bbox") else "minimum font size reached"
+                        reason = (
+                            "insufficient cell height at the minimum font size"
+                            if block.style.get("table_cell_bbox")
+                            else "minimum font size reached"
+                        )
                         message += "; " + reason
                     elif layout.fit_status == "unsupported_glyphs":
                         message += "; required font or glyph unavailable"
@@ -56,36 +91,78 @@ class CheckerAgent:
                 if not src.rect.contains(rect):
                     add("clipping", "Layout exceeds page boundaries", block)
                 extracted = dst.get_textbox(rect + (-2, -2, 2, 2), textpage=textpage)
-                if normalized(display_text(block, translation.text)) not in normalized(extracted):
-                    add("missing_text", "Rendered text differs from expected translation", block)
+                if normalized(display_text(block, translation.text)) not in normalized(
+                    extracted
+                ):
+                    add(
+                        "missing_text",
+                        "Rendered text differs from expected translation",
+                        block,
+                    )
                 for literal in LITERALS.findall(literal_source(block)):
                     if literal not in translation.text:
-                        add("protected_value_changed", "A source literal is missing from translation", block)
-                for region in [block.bbox, layout.bbox, *block.style.get("source_regions", [])]:
+                        add(
+                            "protected_value_changed",
+                            "A source literal is missing from translation",
+                            block,
+                        )
+                for region in [
+                    block.bbox,
+                    layout.bbox,
+                    *block.style.get("source_regions", []),
+                ]:
                     r = fitz.Rect(region) + (-3, -3, 3, 3)
-                    mask[max(0,int(r.y0)):min(mask.shape[0],int(r.y1)+1), max(0,int(r.x0)):min(mask.shape[1],int(r.x1)+1)] = False
+                    mask[
+                        max(0, int(r.y0)) : min(mask.shape[0], int(r.y1) + 1),
+                        max(0, int(r.x0)) : min(mask.shape[1], int(r.x1) + 1),
+                    ] = False
             from app.services.table_alignment import TableAlignment
-            for block, code, message in TableAlignment(self.fonts).diagnostics(src, entries):
-                add(code, message, block, severity='warning')
-            fitted = [(b, l) for b, _, l in entries if l.fit_status == "fitted"]
+
+            for block, code, message in TableAlignment(self.fonts).diagnostics(
+                src, entries
+            ):
+                add(code, message, block, severity="warning")
+            fitted = [
+                (b, entry_layout)
+                for b, _, entry_layout in entries
+                if entry_layout.fit_status == "fitted"
+            ]
             for i, (block, layout) in enumerate(fitted):
-                for other, other_layout in fitted[i+1:]:
-                    overlap = (fitz.Rect(layout.bbox) & fitz.Rect(other_layout.bbox)).get_area()
+                for other, other_layout in fitted[i + 1 :]:
+                    overlap = (
+                        fitz.Rect(layout.bbox) & fitz.Rect(other_layout.bbox)
+                    ).get_area()
                     if overlap > 1:
-                        inherited = (fitz.Rect(block.bbox) & fitz.Rect(other.bbox)).get_area()
-                        if overlap <= inherited + .01:
-                            add("source_geometry_overlap", f"Initial text boxes already overlap block {other.id}; inspect visible text", block, severity="warning")
+                        inherited = (
+                            fitz.Rect(block.bbox) & fitz.Rect(other.bbox)
+                        ).get_area()
+                        if overlap <= inherited + 0.01:
+                            add(
+                                "source_geometry_overlap",
+                                f"Initial text boxes already overlap block {other.id}; inspect visible text",
+                                block,
+                                severity="warning",
+                            )
                         else:
-                            add("collision", f"Layout introduces or increases overlap with block {other.id}", block)
+                            add(
+                                "collision",
+                                f"Layout introduces or increases overlap with block {other.id}",
+                                block,
+                            )
             a = src.get_pixmap(alpha=False)
             b = dst.get_pixmap(alpha=False)
-            arr_a = np.frombuffer(a.samples, np.uint8).reshape(a.height,a.width,a.n)
-            arr_b = np.frombuffer(b.samples, np.uint8).reshape(b.height,b.width,b.n)
+            arr_a = np.frombuffer(a.samples, np.uint8).reshape(a.height, a.width, a.n)
+            arr_b = np.frombuffer(b.samples, np.uint8).reshape(b.height, b.width, b.n)
             if arr_a.shape == arr_b.shape:
-                mask = mask[:a.height,:a.width]
-                differences = np.max(np.abs(arr_a.astype(int)-arr_b.astype(int)),axis=2) > 8
-                if np.count_nonzero(differences & mask) > max(10, mask.sum() * .0001):
-                    add("graphics_changed", "Unexpected visual changes outside text replacement regions")
+                mask = mask[: a.height, : a.width]
+                differences = (
+                    np.max(np.abs(arr_a.astype(int) - arr_b.astype(int)), axis=2) > 8
+                )
+                if np.count_nonzero(differences & mask) > max(10, mask.sum() * 0.0001):
+                    add(
+                        "graphics_changed",
+                        "Unexpected visual changes outside text replacement regions",
+                    )
             else:
                 add("page_dimensions_changed", "Output page dimensions changed")
         return issues

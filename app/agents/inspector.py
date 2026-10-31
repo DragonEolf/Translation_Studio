@@ -1,4 +1,7 @@
+"""Validate PDF inputs and choose digital, scanned, or blank-page extraction."""
+
 import pymupdf as fitz
+
 from app.config import StudioError
 
 
@@ -20,5 +23,24 @@ class InspectorAgent:
                 has_text = bool(page.get_text().strip())
                 images = len(page.get_images())
                 visual_content = images or bool(page.get_drawings())
-                result.append({"number": page.number + 1, "width": page.rect.width, "height": page.rect.height, "fonts": [font[3] for font in page.get_fonts()], "text_coverage": sum(fitz.Rect(b[:4]).get_area() for b in page.get_text("blocks") if b[6] == 0) / page.rect.get_area(), "images": images, "extraction_method": "digital" if has_text else "ocr" if visual_content else "blank"})
+                result.append(
+                    {
+                        "number": page.number + 1,
+                        "width": page.rect.width,
+                        "height": page.rect.height,
+                        "fonts": [font[3] for font in page.get_fonts()],
+                        "text_coverage": sum(
+                            fitz.Rect(b[:4]).get_area()
+                            for b in page.get_text("blocks")
+                            if b[6] == 0
+                        )
+                        / page.rect.get_area(),
+                        "images": images,
+                        "extraction_method": "digital"
+                        if has_text
+                        else "ocr"
+                        if visual_content
+                        else "blank",
+                    }
+                )
             return result

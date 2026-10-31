@@ -1,7 +1,10 @@
 """Shared typography and vertical flow for related paragraphs in table cells."""
-from collections import defaultdict
+
 import math
+from collections import defaultdict
+
 import pymupdf as fitz
+
 from app.services.text_fitter import rich_markup, text_direction
 
 
@@ -21,7 +24,7 @@ class CellLayout:
         available = {b.id: (b, t, layout) for b, t, layout in entries}
         cells = defaultdict(list)
         for block in blocks:
-            cell = block.style.get('table_cell_bbox')
+            cell = block.style.get("table_cell_bbox")
             if cell:
                 cells[tuple(cell)].append(block)
         changed = []
@@ -31,7 +34,14 @@ class CellLayout:
             current = []
             for block in members:
                 entry = available.get(block.id)
-                eligible = entry and entry[2].fit_status in {'fitted', 'overflow'} and block.style.get('rich_text') and getattr(entry[1], 'metadata_json', {}).get('rich_text', {}).get('runs')
+                eligible = (
+                    entry
+                    and entry[2].fit_status in {"fitted", "overflow"}
+                    and block.style.get("rich_text")
+                    and getattr(entry[1], "metadata_json", {})
+                    .get("rich_text", {})
+                    .get("runs")
+                )
                 if not eligible:
                     if current:
                         groups.append(current)
@@ -39,7 +49,11 @@ class CellLayout:
                     continue
                 if current:
                     previous = current[-1][0]
-                    below = block.bbox[1] > previous.bbox[1] + min(block.style['size'], previous.style['size']) * .5
+                    below = (
+                        block.bbox[1]
+                        > previous.bbox[1]
+                        + min(block.style["size"], previous.style["size"]) * 0.5
+                    )
                     if not below:
                         groups.append(current)
                         current = []
@@ -51,20 +65,24 @@ class CellLayout:
                     continue
                 identities = {b.id for b, _, _ in group}
                 bounds = fitz.Rect(cell) & fitz.Rect(0, 0, page.width, page.height)
-                bounds += (.75, .75, -.75, -.75)
+                bounds += (0.75, 0.75, -0.75, -0.75)
                 # Retain the original paragraph indent, including bullet markers.
-                if not all(b.style.get('align') == 'center' for b, _, _ in group):
+                if not all(b.style.get("align") == "center" for b, _, _ in group):
                     bounds.x0 = max(bounds.x0, min(b.bbox[0] for b, _, _ in group))
                 top = min(b.bbox[1] for b, _, _ in group)
                 bottom = max(b.bbox[3] for b, _, _ in group)
                 for other in members:
                     if other.id in identities:
                         continue
-                    rect = fitz.Rect(available[other.id][2].bbox if other.id in available else other.bbox)
-                    if rect.y1 <= top + .1:
-                        bounds.y0 = max(bounds.y0, rect.y1 + .5)
-                    elif rect.y0 >= bottom - .1:
-                        bounds.y1 = min(bounds.y1, rect.y0 - .5)
+                    rect = fitz.Rect(
+                        available[other.id][2].bbox
+                        if other.id in available
+                        else other.bbox
+                    )
+                    if rect.y1 <= top + 0.1:
+                        bounds.y0 = max(bounds.y0, rect.y1 + 0.5)
+                    elif rect.y0 >= bottom - 0.1:
+                        bounds.y1 = min(bounds.y1, rect.y0 - 0.5)
                 if bounds.is_empty:
                     continue
                 # Do not flow through images or text excluded from the group.
@@ -79,7 +97,7 @@ class CellLayout:
                 cursor = bounds.y0
                 for (block, translation, layout), height in zip(group, heights):
                     layout.bbox = [bounds.x0, cursor, bounds.x1, cursor + height]
-                    layout.font_size = float(block.style['size']) * scale
+                    layout.font_size = float(block.style["size"]) * scale
                     layout.fit_status = "fitted"
                     layout.line_breaks = translation.text.splitlines()
                     cursor += height + gap
@@ -87,21 +105,44 @@ class CellLayout:
         return changed
 
     def _measure(self, group, bounds, scale):
-        gap = max(.3, min(float(b.style['size']) for b, _, _ in group) * scale * .12)
+        gap = max(0.3, min(float(b.style["size"]) for b, _, _ in group) * scale * 0.12)
         heights = []
         measure_height = max(4096, bounds.height * 4)
         with fitz.open() as doc:
             for block, translation, _ in group:
-                runs = translation.metadata_json['rich_text']['runs']
-                fonts = {bold: self.fonts.resolve(translation.target_language, translation.script, bold) for bold in (False, True)}
-                size = float(block.style['size']) * scale
-                content, css = rich_markup(runs, size, float(block.style['size']), fonts, block.style.get('align', 'left'), direction=text_direction(translation.target_language, translation.script), registry=self.fonts, line_height=block.style.get("line_height",1.05))
-                page = doc.new_page(width=max(72, bounds.width + 2), height=measure_height + 2)
-                spare, _ = page.insert_htmlbox(fitz.Rect(0, 0, bounds.width, measure_height), content, css=css, scale_low=1)
+                runs = translation.metadata_json["rich_text"]["runs"]
+                fonts = {
+                    bold: self.fonts.resolve(
+                        translation.target_language, translation.script, bold
+                    )
+                    for bold in (False, True)
+                }
+                size = float(block.style["size"]) * scale
+                content, css = rich_markup(
+                    runs,
+                    size,
+                    float(block.style["size"]),
+                    fonts,
+                    block.style.get("align", "left"),
+                    direction=text_direction(
+                        translation.target_language, translation.script
+                    ),
+                    registry=self.fonts,
+                    line_height=block.style.get("line_height", 1.05),
+                )
+                page = doc.new_page(
+                    width=max(72, bounds.width + 2), height=measure_height + 2
+                )
+                spare, _ = page.insert_htmlbox(
+                    fitz.Rect(0, 0, bounds.width, measure_height),
+                    content,
+                    css=css,
+                    scale_low=1,
+                )
                 if spare < 0:
                     return None
                 # Round upwards so final per-paragraph rendering has spare room.
-                height = math.ceil((measure_height - spare) * 100) / 100 + .05
+                height = math.ceil((measure_height - spare) * 100) / 100 + 0.05
                 heights.append(height)
         if sum(heights) + gap * (len(group) - 1) > bounds.height:
             return None
@@ -110,15 +151,18 @@ class CellLayout:
     def _fit(self, group, bounds):
         # Enforce a readable floor across all body runs in the cell.
         from app.services.layout_tools import minimum_body_size
-        low = max(min(self.min_size, float(b.style["size"])) /
-                  max(.01, minimum_body_size(b, t, float(b.style["size"])))
-                  for b, t, _ in group)
+
+        low = max(
+            min(self.min_size, float(b.style["size"]))
+            / max(0.01, minimum_body_size(b, t, float(b.style["size"])))
+            for b, t, _ in group
+        )
         if low > 1:
             return None
         measured = self._measure(group, bounds, low)
         if measured is None:
             return None
-        high = 1.
+        high = 1.0
         best = (low, *measured)
         for attempt in range(16):
             size = high if attempt == 0 else (low + high) / 2

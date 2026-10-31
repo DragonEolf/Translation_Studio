@@ -298,7 +298,8 @@ provider calls are made in the test suite.
 The job payload exposes `repair_results` and `accepted`; accepted batch details
 are also saved in `repair-report.json`. The default limit is 20 regions per request.
 The legacy per-block revise endpoint still returns `410 reasoning_disabled`;
-historical repair providers remain isolated for benchmark reproduction.
+historical repair providers live under `benchmarks/legacy/` for regression reproduction
+and are excluded from the installed application.
 
 ## Automatic transliteration and shared layout
 

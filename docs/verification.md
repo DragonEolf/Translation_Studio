@@ -1,5 +1,30 @@
 # Release verification — October 29, 2026
 
+## October 31: code quality and repository cleanup
+
+Repository-wide Python lint and formatting checks pass with Ruff 0.17.3.
+Frontend JavaScript, HTML, CSS, browser tests, and the benchmark browser renderer
+pass Prettier 3.9.10 formatting checks. The full Python suite passes **352 tests**;
+all **36 mocked browser scenarios** pass in Chromium headless shell. Dependency
+consistency (`pip check`), Git whitespace, local Markdown links, and JSON parsing
+also pass. Existing dependency deprecation warnings remain.
+
+The cleanup removes unused imports/bindings, expands compressed statements,
+documents module responsibilities, removes three superseded scripts tied to one
+local document ID, and moves historical repair implementations into
+`benchmarks/legacy/`. Benchmarks remain outside the installed application. Manual
+live utilities now require explicit opt-in, and importing the font downloader no
+longer downloads files or writes a manifest. Two new regressions cover the
+ForMaT live guard and import-safe font downloader.
+
+No live translation, OCR, transliteration, or AI repair calls were made for this
+cleanup. These checks do not establish linguistic quality or eliminate the need
+for visual review of real translated documents. See the
+[development guide](development.md), [benchmark index](../benchmarks/README.md),
+and [script index](../scripts/README.md) for maintenance and reproduction commands.
+
+## Original release verification
+
 Verification used a temporary copy of the release files, with no production
 `.env`, database, uploaded documents or generated outputs copied into it. A fresh
 Python 3.13 virtual environment installed dependencies using the README command.

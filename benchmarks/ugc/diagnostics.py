@@ -1,10 +1,11 @@
 """Sanitized per-attempt provider diagnostics; never stores bodies or credentials."""
+
 import asyncio
+import json
+import time
 from collections import Counter
 from datetime import datetime, timezone
-import json
 from pathlib import Path
-import time
 
 import httpx
 
@@ -38,9 +39,16 @@ class RecordingTransport(httpx.AsyncBaseTransport):
             else:
                 response = await self.transport.handle_async_request(request)
                 await response.aread()
-            event.update(http_status=response.status_code, category=status_category(response.status_code))
+            event.update(
+                http_status=response.status_code,
+                category=status_category(response.status_code),
+            )
             # Persist only numeric limit headers, never arbitrary provider strings.
-            for name in ("retry-after", "x-ratelimit-limit-requests", "x-ratelimit-remaining-requests"):
+            for name in (
+                "retry-after",
+                "x-ratelimit-limit-requests",
+                "x-ratelimit-remaining-requests",
+            ):
                 try:
                     value = float(response.headers[name])
                     if value >= 0 and value < float("inf"):
@@ -53,7 +61,11 @@ class RecordingTransport(httpx.AsyncBaseTransport):
                     if isinstance(body, dict) and body.get("error"):
                         error = body["error"]
                         code = error.get("code") if isinstance(error, dict) else None
-                        event["category"] = status_category(code) if type(code) is int and code >= 400 else "provider_error_response"
+                        event["category"] = (
+                            status_category(code)
+                            if type(code) is int and code >= 400
+                            else "provider_error_response"
+                        )
                         if type(code) is int:
                             event["response_error_code"] = code
                 except ValueError:
@@ -69,19 +81,25 @@ class RecordingTransport(httpx.AsyncBaseTransport):
             event.update(category="cancelled")
             raise
         finally:
-            event["elapsed_seconds"] = round(time.monotonic()-started, 3)
+            event["elapsed_seconds"] = round(time.monotonic() - started, 3)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a") as stream:
-                stream.write(json.dumps(event)+"\n")
+                stream.write(json.dumps(event) + "\n")
 
 
 def request_summary(directory):
     services = {}
     for path in Path(directory).glob("*-requests.jsonl"):
-        events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        events = [
+            json.loads(line) for line in path.read_text().splitlines() if line.strip()
+        ]
         services[path.stem.removesuffix("-requests")] = dict(
-            attempts=len(events), categories=dict(Counter(e["category"] for e in events)),
-            http_statuses=dict(Counter(str(e["http_status"]) for e in events if "http_status" in e)))
+            attempts=len(events),
+            categories=dict(Counter(e["category"] for e in events)),
+            http_statuses=dict(
+                Counter(str(e["http_status"]) for e in events if "http_status" in e)
+            ),
+        )
     return services
 
 
@@ -94,18 +112,40 @@ def failure_details(exc, directory, stage):
         paths.append(Path(directory) / "ocr-requests.jsonl")
     for path in paths:
         if path.exists():
-            events.extend(json.loads(line) for line in path.read_text().splitlines() if line.strip())
+            events.extend(
+                json.loads(line)
+                for line in path.read_text().splitlines()
+                if line.strip()
+            )
     events.sort(key=lambda e: e["at"])
     category = "internal_error"
     if isinstance(exc, (ValueError,)):
-        category = "evaluation_validation" if stage == "comparison" else "input_validation"
+        category = (
+            "evaluation_validation" if stage == "comparison" else "input_validation"
+        )
         if events and events[-1]["category"] == "invalid_json_response":
             category = "invalid_response"
-    if code in {"invalid_provider_response", "invalid_ocr_response", "invalid_translation_batch", "protected_value_changed", "translation_truncated"}:
+    if code in {
+        "invalid_provider_response",
+        "invalid_ocr_response",
+        "invalid_translation_batch",
+        "protected_value_changed",
+        "translation_truncated",
+    }:
         category = "invalid_response"
-    elif code in {"invalid_api_key", "missing_api_key", "missing_ocr_api_key", "ocr_authentication_failed"}:
+    elif code in {
+        "invalid_api_key",
+        "missing_api_key",
+        "missing_ocr_api_key",
+        "ocr_authentication_failed",
+    }:
         category = "authentication"
-    elif code in {"provider_unavailable", "ocr_unavailable", "provider_request_rejected", "ocr_request_rejected"}:
+    elif code in {
+        "provider_unavailable",
+        "ocr_unavailable",
+        "provider_request_rejected",
+        "ocr_request_rejected",
+    }:
         category = events[-1]["category"] if events else "provider_failure_unclassified"
     elif isinstance(exc, RuntimeError):
         if "overall deadline" in str(exc) or "job timed out" in str(exc):

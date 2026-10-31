@@ -134,7 +134,12 @@ centering and graphics changes. The human decides which regions need AI repair.
 The repair model receives selected source/output crops, text, findings, and
 reviewer notes. It proposes constrained wording or layout changes. Application
 code validates and renders proposals before publishing them, preserving revision
-history and a previous-output backup. This is a constrained document workflow;
+history and a previous-output backup. A locally rejected repair gets one additional
+AI attempt with the rejected proposal, failure reason, and rendering findings.
+Both attempts receive wider source/output crops, up to 12 nearby text blocks,
+and up to 32 image/vector bounds as read-only context, with totals indicating
+truncation. Local checks still consider all page obstacles. No-change/manual-review responses and provider failures are
+not retried. This is a constrained document workflow;
 models do not receive arbitrary filesystem or command access.
 
 The [layout policy guide](docs/layout-policy.md) explains when regions may join,
@@ -154,9 +159,9 @@ app/
   models/                 SQLAlchemy models and SQLite integrity rules
   web/                    HTML, CSS, JavaScript and interface assets
   cli.py                  Repair/rerender an existing document from the command line
-scripts/                  Font setup and focused diagnostic utilities
+scripts/                  Font setup and documented manual diagnostics
 tests/                    Python tests; mocked browser tests in tests/web/
-benchmarks/               Offline layout suites and explicitly enabled live evaluations
+benchmarks/               Offline layout suites, optional live evaluations and legacy experiments
 docs/                     Interface image and detailed implementation notes
 fonts/                    Bundled font files and third-party licenses
 ```
@@ -188,6 +193,14 @@ For browser tests, install Node.js and follow the
 HTML/CSS/JavaScript with mocked APIs, including responsive layout, review decisions,
 repair recovery, and download controls. Screenshots go into the ignored `output/`
 directory. Automated checks do not establish semantic translation quality.
+
+### Development and evaluation
+
+The [benchmark index](benchmarks/README.md) explains which suites to keep, what
+each measures, and which commands use external services. These tools are separate
+from the installed application. See the [development guide](docs/development.md)
+for formatting, lint checks, architecture boundaries, and maintenance conventions,
+and the [script index](scripts/README.md) for manual utilities.
 
 Useful benchmark guides:
 

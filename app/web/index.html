@@ -1,99 +1,490 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f4f6f0">
-  <meta name="description" content="Translate digital and scanned PDFs into Indic languages while preserving their structure.">
-  <title>Translation Studio</title>
-  <link rel="stylesheet" href="/assets/style.css">
-  <link rel="stylesheet" href="/assets/review.css">
-  <script src="/assets/app.js" defer></script>
-  <script src="/assets/review.js" defer></script>
-</head>
-<body>
-  <a class="skip-link" href="#translate-form">Skip to translator</a>
-  <header><a class="brand" href="/" aria-label="Translation Studio home"><img class="iitm-logo" src="/assets/iitm-logo.png" width="52" height="52" alt="IIT Madras"><span>Translation Studio<small>Indian Institute of Technology Madras</small></span></a><span class="header-note">Made by Krishna Karthikeyan</span></header>
-  <main>
-    <div class="intro"><p class="eyebrow">Across languages. On the same page.</p><h1>Same document.<br>A new language.</h1><p>Translate your PDF into an Indic language or English.<br class="desktop-break"> Keep the structure, images, and details that matter.</p></div>
-    <section class="workspace" aria-label="PDF translator">
-      <div id="connection-note" class="notice" role="status" hidden><p id="connection-message"></p><button id="reconnect" type="button" class="text-button">Check connection</button></div>
-      <form id="translate-form">
-        <label class="field-label" for="pdf-file">Your PDF <span class="label-note">One document at a time</span></label>
-        <label class="dropzone" id="dropzone" for="pdf-file">
-          <input id="pdf-file" name="file" type="file" accept=".pdf,application/pdf" required aria-describedby="file-detail file-error">
-          <svg width="32" height="38" viewBox="0 0 28 34" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M17 1H4a3 3 0 0 0-3 3v26a3 3 0 0 0 3 3h20a3 3 0 0 0 3-3V11L17 1Z"/><path d="M17 1v10h10M14 26V16m-4 4 4-4 4 4"/></svg>
-          <strong id="file-label">Choose a PDF or drop it here</strong>
-          <span id="file-detail">Checking upload limits…</span>
-        </label>
-        <p id="file-error" class="field-error" role="alert" hidden></p>
-        <p class="field-hint">Digital, scanned, and mixed PDFs supported. Scans use OCR automatically.</p>
-        <div class="language-field"><label class="field-label" for="language">Translate into</label><select id="language" name="language" disabled aria-describedby="font-note"><option>Loading languages…</option></select><p id="font-note" class="field-hint warning-text" hidden></p></div>
-        <fieldset id="layout-options"><legend class="field-label">What matters most?</legend>
-          <div class="layout-choices">
-            <label class="layout-choice"><input type="radio" name="layout_mode" value="auto" checked><span><strong>Automatic · default</strong><small>Choose based on text fragmentation.</small></span></label>
-            <label class="layout-choice"><input type="radio" name="layout_mode" value="spans"><span><strong>Preserve original layout</strong><small>Keep each text box in place.</small></span></label>
-            <label class="layout-choice"><input type="radio" name="layout_mode" value="paragraphs"><span><strong>Improve readability</strong><small>Reflow paragraphs with their formatting.</small></span></label>
-          </div>
-          <p id="layout-help" class="field-hint">Paragraph reflow is experimental; dense pages can still need smaller text or review.</p>
-        </fieldset>
-        <label class="transliteration-option" for="auto-transliterate"><input id="auto-transliterate" type="checkbox"><span><strong>Transliterate remaining English</strong><small>After translation, pronounce remaining English words and abbreviations in the selected script. Bodhan applies them before preparing your PDF. If its endpoint is unavailable, eligible words may be sent to the configured OpenRouter phonetic service.</small></span></label>
-        <button id="submit" type="submit" disabled><span id="submit-label">Translate PDF</span><span aria-hidden="true">→</span></button>
-        <p class="account-note">Text is sent to your configured Bodhan service; scanned pages are sent as images for OCR. Usage charges may apply.</p>
-      </form>
-      <section id="result" class="result" aria-labelledby="status-title" hidden>
-        <div class="result-heading"><span class="status-dot" aria-hidden="true"></span><h2 id="status-title" tabindex="-1">Preparing your document</h2></div>
-        <p id="status-detail" role="status" aria-live="polite"></p>
-        <p id="document-note" class="document-note" hidden></p>
-        <div id="progress-wrap"><ol class="steps" aria-label="Processing stages"><li data-step="upload">Upload</li><li data-step="inspect">Read</li><li data-step="translate">Translate</li><li data-step="render">Prepare PDF</li></ol><progress id="progress" max="100" value="0" aria-label="Approximate overall progress"></progress><div class="progress-label"><span id="stage">Uploading</span><span id="percent">0%</span></div><p class="progress-note">Progress is approximate. Complex pages and scans can take longer.</p></div>
-        <div id="review-note" class="review-note" hidden><strong id="review-title">Review before sharing</strong><p id="review-summary"></p><ul id="review-reasons"></ul></div>
-        <a id="download" class="download" hidden><span>Download translated PDF</span><span aria-hidden="true">↓</span></a>
-        <a id="draft" class="draft-link" hidden>Download source-retaining draft for review</a>
-        <button id="see-issues" type="button" class="secondary-button" aria-controls="document-review" aria-expanded="false" hidden>See issues · compare PDFs</button>
-        <button id="transliterate" type="button" class="secondary-button" hidden>Transliterate remaining English</button>
-        <section id="transliteration-panel" class="transliteration-panel" aria-labelledby="transliteration-title" hidden>
-          <h3 id="transliteration-title">Choose words to pronounce in your language</h3><p class="field-hint">Selected words use Bodhan or the configured OpenRouter phonetic fallback. Previewing does not change your PDF.</p>
-          <p class="field-hint">Choose up to 20 words or abbreviations. Acronyms use English letter names. Preview each pronunciation before applying; names can be ambiguous. Selected words are sent to Bodhan.</p>
-          <fieldset id="transliteration-choices"><legend class="field-label">Remaining English</legend><div id="transliteration-words"></div></fieldset>
-          <p id="transliteration-message" class="field-hint" role="status" aria-live="polite"></p>
-          <button id="generate-transliteration" type="button" class="secondary-button">Preview pronunciations</button>
-          <button id="apply-transliteration" type="button" class="secondary-button" hidden>Apply selected pronunciations</button>
-        </section>
-        <button id="cancel" type="button" class="secondary-button" hidden>Cancel translation</button>
-        <button id="resume" type="button" class="secondary-button" hidden>Reconnect to this job</button>
-        <button id="new-document" type="button" class="text-button" hidden>Translate another PDF</button>
-      </section>
-    </section>
-    <p class="footer-note">Your original stays unchanged. Complex tables, diagrams, and scans may need a visual check.</p>
-    <p class="maker-credit">Made by <strong>Krishna Karthikeyan</strong></p>
-    <noscript><p class="notice">Enable JavaScript to upload and translate PDFs.</p></noscript>
-  </main>
-  <section id="document-review" class="document-review" aria-labelledby="review-heading" hidden>
-    <div class="review-header"><div><p class="eyebrow">Document review</p><h2 id="review-heading" tabindex="-1">A closer look, side by side.</h2><p id="review-filename"></p></div><button id="close-review" type="button" class="secondary-button">Close review</button></div>
-    <p class="review-explainer">Compare each highlighted region with the original. Automatic checks flag layout and processing problems; they do not verify translation accuracy.</p>
-    <p id="review-layout-note" class="review-explainer" hidden></p>
-    <p id="review-loading" role="status" aria-live="polite"></p>
-    <button id="retry-review" type="button" class="text-button" hidden>Try loading the review again</button>
-    <div id="review-content" hidden>
-      <div id="review-bar" class="review-bar" role="img" aria-label="Automatic findings by text region"></div>
-      <div class="review-legend" aria-label="Highlight colour legend"><span class="legend-change">! Needs attention</span><span class="legend-review">△ Check visually</span><span class="legend-clear">○ No automatic issue</span><span class="legend-okay">✓ You marked okay</span></div>
-      <p id="review-counts" class="field-hint" role="status"></p>
-      <div class="review-toolbar"><div class="review-pagination"><button id="review-prev" type="button" aria-label="Previous page">←</button><label for="review-page">Page</label><select id="review-page"></select><span id="review-page-total"></span><button id="review-next" type="button" aria-label="Next page">→</button></div><label><input id="review-highlights" type="checkbox" checked> Show highlights</label><label><input id="review-sync" type="checkbox" checked> Sync scrolling</label><label>Zoom <select id="review-zoom"><option value="1">Fit width</option><option value="1.5">150%</option><option value="2">200%</option></select></label></div>
-      <div class="review-columns"><div class="review-pdfs"><section aria-label="Original PDF page"><h3>Original</h3><div id="source-scroll" class="pdf-scroll" tabindex="0" aria-label="Scroll original page"><div id="source-canvas" class="pdf-canvas"><img id="review-source" alt=""><div id="source-highlights" class="pdf-highlights"></div></div><p id="source-unavailable" class="preview-unavailable" hidden>Original preview unavailable.</p></div></section><section aria-label="Translated PDF page"><h3 id="translated-page-heading">Translated</h3><div id="translated-scroll" class="pdf-scroll" tabindex="0" aria-label="Scroll translated page"><div id="translated-canvas" class="pdf-canvas"><img id="review-translated" alt=""><div id="translated-highlights" class="pdf-highlights"></div></div><p id="translated-unavailable" class="preview-unavailable" hidden>Translated preview unavailable. Use the PDF download to inspect this page.</p></div></section></div>
-        <aside class="review-sidebar" aria-label="Findings and review decisions"><label class="field-label" for="review-filter">Show regions</label><select id="review-filter"><option value="flagged">Pending findings</option><option value="all">All regions</option><option value="change">Needs attention</option><option value="review">Check visually</option><option value="okay">Marked okay</option><option value="human-change">Needs changes queue</option></select><p id="review-list-count" class="field-hint"></p><div id="review-region-list" class="review-region-list"></div><section id="review-detail" class="review-detail" aria-labelledby="review-detail-title" hidden><h3 id="review-detail-title" tabindex="-1"></h3><p id="review-region-status"></p><div id="review-findings"></div><details open><summary>Compare text</summary><h4>Original</h4><p id="review-source-text" dir="auto"></p><h4>Translation</h4><p id="review-translated-text" dir="auto"></p></details><fieldset><legend>Your decision</legend><div class="review-decisions"><button id="review-okay" type="button">✓ Looks okay</button><button id="review-change" type="button">! Needs changes</button><button id="review-reset" type="button" class="text-button">Clear decision</button></div></fieldset><p class="field-hint">Marks are saved in this browser tab for this output version. Either decision removes the region from pending findings. Needs changes adds it to the changes queue. Run AI repair below after reviewing your selections. Clear a decision to return it to pending. The PDF and original diagnostics stay available.</p></section></aside>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f4f6f0" />
+    <meta
+      name="description"
+      content="Translate digital and scanned PDFs into Indic languages while preserving their structure."
+    />
+    <title>Translation Studio</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+    <link rel="stylesheet" href="/assets/review.css" />
+    <script src="/assets/app.js" defer></script>
+    <script src="/assets/review.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#translate-form">Skip to translator</a>
+    <header>
+      <a class="brand" href="/" aria-label="Translation Studio home"
+        ><img
+          class="iitm-logo"
+          src="/assets/iitm-logo.png"
+          width="52"
+          height="52"
+          alt="IIT Madras"
+        /><span
+          >Translation Studio<small
+            >Indian Institute of Technology Madras</small
+          ></span
+        ></a
+      ><span class="header-note">Made by Krishna Karthikeyan</span>
+    </header>
+    <main>
+      <div class="intro">
+        <p class="eyebrow">Across languages. On the same page.</p>
+        <h1>Same document.<br />A new language.</h1>
+        <p>
+          Translate your PDF into an Indic language or English.<br
+            class="desktop-break"
+          />
+          Keep the structure, images, and details that matter.
+        </p>
       </div>
-      <section class="review-repair" aria-labelledby="repair-heading">
-        <h3 id="repair-heading">Finish your changes</h3>
-        <p id="repair-queue-count" class="field-hint"></p>
-        <label class="field-label" for="repair-instruction">What should be fixed? <span class="field-hint">Optional</span></label>
-        <textarea id="repair-instruction" rows="3" maxlength="2000" placeholder="For example: center the table labels and improve the spacing."></textarea>
-        <p class="field-hint">AI compares the selected source and output regions using your notes. Selected text and image crops are sent to the configured AI service. Repairs must pass local rendering checks; review the updated result before using it.</p>
-        <button id="repair-marked" type="button" class="secondary-button" disabled>Repair marked regions with AI</button>
-        <p id="repair-status" role="status" aria-live="polite"></p>
-        <ul id="repair-results"></ul>
-        <div class="review-final-download"><a id="review-final-download" class="download" download>Download final PDF</a><a id="review-previous-download" class="text-button" download hidden>Download previous PDF</a></div>
+      <section class="workspace" aria-label="PDF translator">
+        <div id="connection-note" class="notice" role="status" hidden>
+          <p id="connection-message"></p>
+          <button id="reconnect" type="button" class="text-button">
+            Check connection
+          </button>
+        </div>
+        <form id="translate-form">
+          <label class="field-label" for="pdf-file"
+            >Your PDF
+            <span class="label-note">One document at a time</span></label
+          >
+          <label class="dropzone" id="dropzone" for="pdf-file">
+            <input
+              id="pdf-file"
+              name="file"
+              type="file"
+              accept=".pdf,application/pdf"
+              required
+              aria-describedby="file-detail file-error"
+            />
+            <svg
+              width="32"
+              height="38"
+              viewBox="0 0 28 34"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              aria-hidden="true"
+            >
+              <path
+                d="M17 1H4a3 3 0 0 0-3 3v26a3 3 0 0 0 3 3h20a3 3 0 0 0 3-3V11L17 1Z"
+              />
+              <path d="M17 1v10h10M14 26V16m-4 4 4-4 4 4" />
+            </svg>
+            <strong id="file-label">Choose a PDF or drop it here</strong>
+            <span id="file-detail">Checking upload limits…</span>
+          </label>
+          <p id="file-error" class="field-error" role="alert" hidden></p>
+          <p class="field-hint">
+            Digital, scanned, and mixed PDFs supported. Scans use OCR
+            automatically.
+          </p>
+          <div class="language-field">
+            <label class="field-label" for="language">Translate into</label
+            ><select
+              id="language"
+              name="language"
+              disabled
+              aria-describedby="font-note"
+            >
+              <option>Loading languages…</option>
+            </select>
+            <p id="font-note" class="field-hint warning-text" hidden></p>
+          </div>
+          <fieldset id="layout-options">
+            <legend class="field-label">What matters most?</legend>
+            <div class="layout-choices">
+              <label class="layout-choice"
+                ><input
+                  type="radio"
+                  name="layout_mode"
+                  value="auto"
+                  checked
+                /><span
+                  ><strong>Automatic · default</strong
+                  ><small>Choose based on text fragmentation.</small></span
+                ></label
+              >
+              <label class="layout-choice"
+                ><input type="radio" name="layout_mode" value="spans" /><span
+                  ><strong>Preserve original layout</strong
+                  ><small>Keep each text box in place.</small></span
+                ></label
+              >
+              <label class="layout-choice"
+                ><input
+                  type="radio"
+                  name="layout_mode"
+                  value="paragraphs"
+                /><span
+                  ><strong>Improve readability</strong
+                  ><small>Reflow paragraphs with their formatting.</small></span
+                ></label
+              >
+            </div>
+            <p id="layout-help" class="field-hint">
+              Paragraph reflow is experimental; dense pages can still need
+              smaller text or review.
+            </p>
+          </fieldset>
+          <label class="transliteration-option" for="auto-transliterate"
+            ><input id="auto-transliterate" type="checkbox" /><span
+              ><strong>Transliterate remaining English</strong
+              ><small
+                >After translation, pronounce remaining English words and
+                abbreviations in the selected script. Bodhan applies them before
+                preparing your PDF. If its endpoint is unavailable, eligible
+                words may be sent to the configured OpenRouter phonetic
+                service.</small
+              ></span
+            ></label
+          >
+          <button id="submit" type="submit" disabled>
+            <span id="submit-label">Translate PDF</span
+            ><span aria-hidden="true">→</span>
+          </button>
+          <p class="account-note">
+            Text is sent to your configured Bodhan service; scanned pages are
+            sent as images for OCR. Usage charges may apply.
+          </p>
+        </form>
+        <section
+          id="result"
+          class="result"
+          aria-labelledby="status-title"
+          hidden
+        >
+          <div class="result-heading">
+            <span class="status-dot" aria-hidden="true"></span>
+            <h2 id="status-title" tabindex="-1">Preparing your document</h2>
+          </div>
+          <p id="status-detail" role="status" aria-live="polite"></p>
+          <p id="document-note" class="document-note" hidden></p>
+          <div id="progress-wrap">
+            <ol class="steps" aria-label="Processing stages">
+              <li data-step="upload">Upload</li>
+              <li data-step="inspect">Read</li>
+              <li data-step="translate">Translate</li>
+              <li data-step="render">Prepare PDF</li>
+            </ol>
+            <progress
+              id="progress"
+              max="100"
+              value="0"
+              aria-label="Approximate overall progress"
+            ></progress>
+            <div class="progress-label">
+              <span id="stage">Uploading</span><span id="percent">0%</span>
+            </div>
+            <p class="progress-note">
+              Progress is approximate. Complex pages and scans can take longer.
+            </p>
+          </div>
+          <div id="review-note" class="review-note" hidden>
+            <strong id="review-title">Review before sharing</strong>
+            <p id="review-summary"></p>
+            <ul id="review-reasons"></ul>
+          </div>
+          <a id="download" class="download" hidden
+            ><span>Download translated PDF</span
+            ><span aria-hidden="true">↓</span></a
+          >
+          <a id="draft" class="draft-link" hidden
+            >Download source-retaining draft for review</a
+          >
+          <button
+            id="see-issues"
+            type="button"
+            class="secondary-button"
+            aria-controls="document-review"
+            aria-expanded="false"
+            hidden
+          >
+            See issues · compare PDFs
+          </button>
+          <button
+            id="transliterate"
+            type="button"
+            class="secondary-button"
+            hidden
+          >
+            Transliterate remaining English
+          </button>
+          <section
+            id="transliteration-panel"
+            class="transliteration-panel"
+            aria-labelledby="transliteration-title"
+            hidden
+          >
+            <h3 id="transliteration-title">
+              Choose words to pronounce in your language
+            </h3>
+            <p class="field-hint">
+              Selected words use Bodhan or the configured OpenRouter phonetic
+              fallback. Previewing does not change your PDF.
+            </p>
+            <p class="field-hint">
+              Choose up to 20 words or abbreviations. Acronyms use English
+              letter names. Preview each pronunciation before applying; names
+              can be ambiguous. Selected words are sent to Bodhan.
+            </p>
+            <fieldset id="transliteration-choices">
+              <legend class="field-label">Remaining English</legend>
+              <div id="transliteration-words"></div>
+            </fieldset>
+            <p
+              id="transliteration-message"
+              class="field-hint"
+              role="status"
+              aria-live="polite"
+            ></p>
+            <button
+              id="generate-transliteration"
+              type="button"
+              class="secondary-button"
+            >
+              Preview pronunciations
+            </button>
+            <button
+              id="apply-transliteration"
+              type="button"
+              class="secondary-button"
+              hidden
+            >
+              Apply selected pronunciations
+            </button>
+          </section>
+          <button id="cancel" type="button" class="secondary-button" hidden>
+            Cancel translation
+          </button>
+          <button id="resume" type="button" class="secondary-button" hidden>
+            Reconnect to this job
+          </button>
+          <button id="new-document" type="button" class="text-button" hidden>
+            Translate another PDF
+          </button>
+        </section>
       </section>
-    </div>
-  </section>
-</body>
+      <p class="footer-note">
+        Your original stays unchanged. Complex tables, diagrams, and scans may
+        need a visual check.
+      </p>
+      <p class="maker-credit">Made by <strong>Krishna Karthikeyan</strong></p>
+      <noscript
+        ><p class="notice">
+          Enable JavaScript to upload and translate PDFs.
+        </p></noscript
+      >
+    </main>
+    <section
+      id="document-review"
+      class="document-review"
+      aria-labelledby="review-heading"
+      hidden
+    >
+      <div class="review-header">
+        <div>
+          <p class="eyebrow">Document review</p>
+          <h2 id="review-heading" tabindex="-1">
+            A closer look, side by side.
+          </h2>
+          <p id="review-filename"></p>
+        </div>
+        <button id="close-review" type="button" class="secondary-button">
+          Close review
+        </button>
+      </div>
+      <p class="review-explainer">
+        Compare each highlighted region with the original. Automatic checks flag
+        layout and processing problems; they do not verify translation accuracy.
+      </p>
+      <p id="review-layout-note" class="review-explainer" hidden></p>
+      <p id="review-loading" role="status" aria-live="polite"></p>
+      <button id="retry-review" type="button" class="text-button" hidden>
+        Try loading the review again
+      </button>
+      <div id="review-content" hidden>
+        <div
+          id="review-bar"
+          class="review-bar"
+          role="img"
+          aria-label="Automatic findings by text region"
+        ></div>
+        <div class="review-legend" aria-label="Highlight colour legend">
+          <span class="legend-change">! Needs attention</span
+          ><span class="legend-review">△ Check visually</span
+          ><span class="legend-clear">○ No automatic issue</span
+          ><span class="legend-okay">✓ You marked okay</span>
+        </div>
+        <p id="review-counts" class="field-hint" role="status"></p>
+        <div class="review-toolbar">
+          <div class="review-pagination">
+            <button id="review-prev" type="button" aria-label="Previous page">
+              ←</button
+            ><label for="review-page">Page</label
+            ><select id="review-page"></select
+            ><span id="review-page-total"></span
+            ><button id="review-next" type="button" aria-label="Next page">
+              →
+            </button>
+          </div>
+          <label
+            ><input id="review-highlights" type="checkbox" checked /> Show
+            highlights</label
+          ><label
+            ><input id="review-sync" type="checkbox" checked /> Sync
+            scrolling</label
+          ><label
+            >Zoom
+            <select id="review-zoom">
+              <option value="1">Fit width</option>
+              <option value="1.5">150%</option>
+              <option value="2">200%</option>
+            </select></label
+          >
+        </div>
+        <div class="review-columns">
+          <div class="review-pdfs">
+            <section aria-label="Original PDF page">
+              <h3>Original</h3>
+              <div
+                id="source-scroll"
+                class="pdf-scroll"
+                tabindex="0"
+                aria-label="Scroll original page"
+              >
+                <div id="source-canvas" class="pdf-canvas">
+                  <img id="review-source" alt="" />
+                  <div id="source-highlights" class="pdf-highlights"></div>
+                </div>
+                <p id="source-unavailable" class="preview-unavailable" hidden>
+                  Original preview unavailable.
+                </p>
+              </div>
+            </section>
+            <section aria-label="Translated PDF page">
+              <h3 id="translated-page-heading">Translated</h3>
+              <div
+                id="translated-scroll"
+                class="pdf-scroll"
+                tabindex="0"
+                aria-label="Scroll translated page"
+              >
+                <div id="translated-canvas" class="pdf-canvas">
+                  <img id="review-translated" alt="" />
+                  <div id="translated-highlights" class="pdf-highlights"></div>
+                </div>
+                <p
+                  id="translated-unavailable"
+                  class="preview-unavailable"
+                  hidden
+                >
+                  Translated preview unavailable. Use the PDF download to
+                  inspect this page.
+                </p>
+              </div>
+            </section>
+          </div>
+          <aside
+            class="review-sidebar"
+            aria-label="Findings and review decisions"
+          >
+            <label class="field-label" for="review-filter">Show regions</label
+            ><select id="review-filter">
+              <option value="flagged">Pending findings</option>
+              <option value="all">All regions</option>
+              <option value="change">Needs attention</option>
+              <option value="review">Check visually</option>
+              <option value="okay">Marked okay</option>
+              <option value="human-change">Needs changes queue</option>
+            </select>
+            <p id="review-list-count" class="field-hint"></p>
+            <div id="review-region-list" class="review-region-list"></div>
+            <section
+              id="review-detail"
+              class="review-detail"
+              aria-labelledby="review-detail-title"
+              hidden
+            >
+              <h3 id="review-detail-title" tabindex="-1"></h3>
+              <p id="review-region-status"></p>
+              <div id="review-findings"></div>
+              <details open>
+                <summary>Compare text</summary>
+                <h4>Original</h4>
+                <p id="review-source-text" dir="auto"></p>
+                <h4>Translation</h4>
+                <p id="review-translated-text" dir="auto"></p>
+              </details>
+              <fieldset>
+                <legend>Your decision</legend>
+                <div class="review-decisions">
+                  <button id="review-okay" type="button">✓ Looks okay</button
+                  ><button id="review-change" type="button">
+                    ! Needs changes</button
+                  ><button id="review-reset" type="button" class="text-button">
+                    Clear decision
+                  </button>
+                </div>
+              </fieldset>
+              <p class="field-hint">
+                Marks are saved in this browser tab for this output version.
+                Either decision removes the region from pending findings. Needs
+                changes adds it to the changes queue. Run AI repair below after
+                reviewing your selections. Clear a decision to return it to
+                pending. The PDF and original diagnostics stay available.
+              </p>
+            </section>
+          </aside>
+        </div>
+        <section class="review-repair" aria-labelledby="repair-heading">
+          <h3 id="repair-heading">Finish your changes</h3>
+          <p id="repair-queue-count" class="field-hint"></p>
+          <label class="field-label" for="repair-instruction"
+            >What should be fixed?
+            <span class="field-hint">Optional</span></label
+          >
+          <textarea
+            id="repair-instruction"
+            rows="3"
+            maxlength="2000"
+            placeholder="For example: center the table labels and improve the spacing."
+          ></textarea>
+          <p class="field-hint">
+            AI compares the selected source and output regions using your notes.
+            Selected text and image crops are sent to the configured AI service.
+            Repairs must pass local rendering checks; review the updated result
+            before using it.
+          </p>
+          <button
+            id="repair-marked"
+            type="button"
+            class="secondary-button"
+            disabled
+          >
+            Repair marked regions with AI
+          </button>
+          <p id="repair-status" role="status" aria-live="polite"></p>
+          <ul id="repair-results"></ul>
+          <div class="review-final-download">
+            <a id="review-final-download" class="download" download
+              >Download final PDF</a
+            ><a
+              id="review-previous-download"
+              class="text-button"
+              download
+              hidden
+              >Download previous PDF</a
+            >
+          </div>
+        </section>
+      </div>
+    </section>
+  </body>
 </html>

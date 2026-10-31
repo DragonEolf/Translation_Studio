@@ -1,3 +1,5 @@
+"""Local per-document paths and UTF-8 JSON artifact persistence."""
+
 import json
 from pathlib import Path
 
@@ -14,5 +16,7 @@ class Storage:
 
     def write_json(self, document_id, name, data):
         path = self.path(document_id, name)
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         return path

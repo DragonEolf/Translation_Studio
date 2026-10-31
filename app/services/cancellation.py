@@ -1,4 +1,5 @@
 """Cooperative cancellation across HTTP awaits and PDF worker threads."""
+
 import asyncio
 from contextlib import suppress
 from threading import Event
@@ -25,7 +26,7 @@ class CancellationToken:
         try:
             while not task.done():
                 self.check()
-                await asyncio.wait({task}, timeout=.1)
+                await asyncio.wait({task}, timeout=0.1)
             self.check()
             return task.result()
         finally:
