@@ -8,6 +8,7 @@ from typing import Protocol
 import httpx
 
 from app.config import StudioError
+from app.services.timing import timed_span
 
 
 class OCRProvider(Protocol):
@@ -143,11 +144,13 @@ class BodhanOCRProvider:
             for attempt in range(self.attempts):
                 response = None
                 try:
-                    response = await client.post(
-                        "https://api.bodhan.ai/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {self.key}"},
-                        json=payload,
-                    )
+                    with timed_span("ocr_http", attempt=attempt + 1) as timing:
+                        response = await client.post(
+                            "https://api.bodhan.ai/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {self.key}"},
+                            json=payload,
+                        )
+                        timing["status_code"] = response.status_code
                 except httpx.TransportError:
                     pass
                 if response is not None:
@@ -182,4 +185,8 @@ class BodhanOCRProvider:
                     )
                 except ValueError:
                     delay = 2**attempt
-                await asyncio.sleep(max(0, min(delay, 60)))
+                with timed_span(
+                    "ocr_retry_wait",
+                    status_code=response.status_code if response is not None else None,
+                ):
+                    await asyncio.sleep(max(0, min(delay, 60)))

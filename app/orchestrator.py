@@ -46,6 +46,7 @@ from app.services.rich_text import (
     source_runs,
 )
 from app.services.table_alignment import TableAlignment
+from app.services.timing import timed_span
 from app.services.typography import TypographyPass, diagnostics
 
 _pdf_lock = RLock()
@@ -57,7 +58,8 @@ def _pdf_call(func, *args):
 
 
 async def pdf_thread(func, *args):
-    return await asyncio.to_thread(_pdf_call, func, *args)
+    with timed_span("pdf_local", local_operation=func.__qualname__):
+        return await asyncio.to_thread(_pdf_call, func, *args)
 
 
 def latest(session, block_id, language=None, script=None):

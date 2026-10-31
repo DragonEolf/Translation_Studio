@@ -14,6 +14,8 @@ NODE_PATH=/tmp/translation-studio-web-tests/node_modules node tests/web/studio.s
 ```
 
 Screenshots are saved under `output/ui-verification/` (ignored by Git).
+To use an existing Chromium-compatible browser, set `CHROME_PATH` to its executable
+when running the suite; otherwise Playwright uses its installed Chromium.
 
 Coverage includes responsive layouts, native language labels, invalid/empty/large
 uploads, both layout preferences, OCR and blank-page messaging, partial output,

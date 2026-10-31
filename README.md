@@ -8,10 +8,15 @@ AI-assisted repair of regions selected by the reviewer.
 Built by **Krishna Karthikeyan** with Python, FastAPI, PyMuPDF, SQLite, and a
 browser interface served by the application. No separate frontend build is needed.
 
-![Side-by-side document review with region highlights](docs/images/review-workspace.png)
+![Translation Studio initial upload screen with Hindi selected](docs/images/initial-ui.png)
 
-*Screenshot generated from synthetic browser-test documents; it illustrates the
-review interface, not measured translation quality.*
+*Start by choosing a PDF, a target language, and a layout preference.*
+
+![Real robotics introduction slide reviewed side by side in English and Hindi](docs/images/review-workspace.png)
+
+*A real English-to-Hindi translation of a robotics introduction slide, shown in
+the review workspace. Highlights support visual review; translation accuracy
+still needs human review.*
 
 ## Features
 
@@ -33,6 +38,8 @@ review interface, not measured translation quality.*
   native-script pronunciations, either automatically or through preview/apply.
 - **Persistent jobs:** SQLite-backed progress, revision history, bounded provider
   retries, cancellation, and recovery after connection interruptions.
+- **Processing timings:** per-attempt timestamps and durations for provider
+  requests, retry waits, and local PDF operations, without recording document text.
 
 ## Quick start
 
@@ -45,8 +52,6 @@ access. Live translation, OCR, transliteration and AI repair also need internet.
 ```sh
 git clone https://github.com/DragonEolf/Translation_Studio.git
 cd Translation_Studio
-# Current submission implementation:
-git switch codex/paragraph-inline-formatting
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[test]'
@@ -164,6 +169,7 @@ tests/                    Python tests; mocked browser tests in tests/web/
 benchmarks/               Offline layout suites, optional live evaluations and legacy experiments
 docs/                     Interface image and detailed implementation notes
 fonts/                    Bundled font files and third-party licenses
+TEST EXAMPLES/            22 original/output PDF pairs and batch timing reports
 ```
 
 `data/` is created at runtime for PDFs, previews, SQLite and revisions. It is
@@ -173,6 +179,24 @@ For the walkthrough, start with `main.py` → `orchestrator.py` → `agents/` �
 `services/renderer.py` and `agents/checker.py`. Selected repair lives in
 `providers/repair.py` and `services/ai_repair.py`; the review interface is
 `web/review.js`.
+
+The [complete project flow](docs/project-flowchart.md) traces each processing
+stage. The [one-line file notes](docs/code-walkthrough-notes.md) provide a quick
+guide to application and supporting files. Scripts and benchmarks are development
+tools; the normal application runs from `app/`.
+
+## Example PDFs and timing data
+
+[TEST EXAMPLES](TEST%20EXAMPLES/README.md) contains 22 numbered folders, each with
+the original PDF and its language-labelled output. The batch produced **20 outputs
+with review findings** and **two source-only drafts**, explicitly labelled as such.
+AI repair and transliteration were disabled for this batch. Successful rendering
+does not establish translation accuracy, and some regions retain source content.
+
+The collection includes a [timing summary](TEST%20EXAMPLES/Timing-summary.csv),
+per-attempt details, and the recorded request-policy change. Timing coverage varies:
+earlier work was unmeasured, and a fixed six-second request delay was removed during
+the run. These are observed test results, not controlled language-speed comparisons.
 
 ## Verification
 

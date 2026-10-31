@@ -301,6 +301,27 @@ The legacy per-block revise endpoint still returns `410 reasoning_disabled`;
 historical repair providers live under `benchmarks/legacy/` for regression reproduction
 and are excluded from the installed application.
 
+## Job timing
+
+Each job exposes `payload.timing.attempts` with UTC start/finish timestamps,
+monotonic processing durations, and categorized spans. Resuming an interrupted
+job adds an attempt rather than overwriting its measured history. Existing jobs
+with earlier progress are flagged `had_unmeasured_progress`; their historical
+processing times cannot be reconstructed from the last-update timestamp.
+
+`queue_elapsed_seconds` measures time from original submission to an attempt's
+start, including pauses and any earlier attempts. It is separate from
+`processing_wall_seconds`. Translation/OCR HTTP requests, retry waits, provider
+request spacing, and local PDF operations are measured separately. Local PDF
+time includes thread/lock waiting; HTTP time includes network and server latency.
+These measurements do not represent pure model execution or CPU time.
+
+Content-free start/end events are also appended to `timing-events.jsonl` in the
+data directory. They record status codes, attempt numbers, input character counts,
+and timing metadata, without source text, translated text, images, or credentials.
+Use complete measured attempts for comparisons and account for cache reuse,
+document size, OCR, target language, and retained-source coverage.
+
 ## Automatic transliteration and shared layout
 
 Select **Transliterate remaining English** before starting, or send

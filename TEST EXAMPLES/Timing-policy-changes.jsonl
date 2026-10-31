@@ -1,0 +1,1 @@
+{"at": "2026-10-31T08:15:53.470528+00:00", "fixed_request_delay_seconds": 0, "workers": 1, "provider_retry_backoff_enabled": true, "note": "Removed the fixed six-second delay at user request; previous timing attempts retained."}

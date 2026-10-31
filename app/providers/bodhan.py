@@ -7,6 +7,7 @@ from typing import Protocol
 import httpx
 
 from app.config import StudioError
+from app.services.timing import timed_span
 
 LANGUAGES = set(
     "as bn brx doi en gu hi kn kok ks ks-Deva mai ml mni mni-Beng mr ne or pa sa sat sd sd-Arab ta te ur".split()
@@ -71,24 +72,33 @@ class BodhanProvider:
             )
         async with httpx.AsyncClient(timeout=60, transport=self.transport) as client:
             for attempt in range(self.attempts):
-                await asyncio.sleep(max(0, self.next_request - time.monotonic()))
+                with timed_span("translation_spacing_wait"):
+                    await asyncio.sleep(max(0, self.next_request - time.monotonic()))
                 try:
-                    response = await client.post(
-                        "https://api.bodhan.ai/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {self.key}"},
-                        json={
-                            "model": "indic-translate",
-                            "messages": [{"role": "user", "content": text}],
-                            "target_language_code": language,
-                            "target_script": script,
-                        },
-                    )
+                    with timed_span(
+                        "translation_http",
+                        attempt=attempt + 1,
+                        input_characters=len(text),
+                        target_language=language,
+                    ) as timing:
+                        response = await client.post(
+                            "https://api.bodhan.ai/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {self.key}"},
+                            json={
+                                "model": "indic-translate",
+                                "messages": [{"role": "user", "content": text}],
+                                "target_language_code": language,
+                                "target_script": script,
+                            },
+                        )
+                        timing["status_code"] = response.status_code
                 except httpx.TransportError:
                     if attempt + 1 == self.attempts:
                         raise StudioError(
                             "provider_unavailable", "Bodhan request failed", 502
                         )
-                    await asyncio.sleep(min(2**attempt, 8))
+                    with timed_span("translation_retry_wait", reason="transport"):
+                        await asyncio.sleep(min(2**attempt, 8))
                     continue
                 try:
                     allowance = float(
@@ -113,7 +123,10 @@ class BodhanProvider:
                         )
                     except ValueError:
                         delay = 2**attempt
-                    await asyncio.sleep(max(0, delay))
+                    with timed_span(
+                        "translation_retry_wait", status_code=response.status_code
+                    ):
+                        await asyncio.sleep(max(0, delay))
                     continue
                 if response.is_error:
                     raise StudioError(

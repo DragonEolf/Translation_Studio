@@ -30,3 +30,11 @@
 | 20 - Konkani | Vehicle Pass copy.pdf | Konkani | 42 / 42 | Completed with review findings |
 | 21 - Manipuri (Meitei) | weird angle book.pdf | Manipuri (Meitei) | 8 / 22 | Completed with review findings |
 | 22 - Santali | White Paper copy.pdf | Santali | 172 / 177 | Completed with review findings |
+
+## Timing data
+
+- [Timing-summary.csv](Timing-summary.csv): per-document measured durations, request counts, and retained-source coverage. Blank timing fields mean unmeasured, not zero.
+- [Timing-details.json](Timing-details.json): per-job attempts, UTC timestamps, monotonic durations, and content-free stage events.
+- [Timing-policy-changes.jsonl](Timing-policy-changes.jsonl): timestamp when the fixed six-second request delay was removed.
+
+Timing coverage is `none`, `partial`, or `full`. Only recorded work contributes to measured durations. Processing excludes queue time; queue durations in the details include user pauses and prior attempts. Provider HTTP time includes network and server latency. Different source documents, target languages, cache reuse, and the request-policy change mean these results should not be treated as a controlled speed ranking.

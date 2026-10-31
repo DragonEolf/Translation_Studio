@@ -1,5 +1,25 @@
 # Release verification — October 29, 2026
 
+## October 31: complete repository publication
+
+The complete update includes the initial UI and real English-to-Hindi review
+screenshots, job timing instrumentation, project flow and file notes, and the
+22-document example collection. Setup now follows the default `main` branch.
+
+- **355 Python tests passed**, including timing, interruption recovery, provider
+  retries, rendering, and existing feature regressions.
+- **36 mocked browser scenarios passed** using headless Brave (Chromium), with
+  browser selection supported through `CHROME_PATH`.
+- Ruff 0.17.3 lint and formatting checks passed across all 144 Python files.
+- Dependency consistency, Git whitespace, documentation link targets, and
+  timing JSON/CSV validation passed.
+
+The example batch is separate from these mocked checks: 20 outputs completed
+with review findings and two runs produced source-only drafts. Timing coverage
+and the mid-run request-policy change are documented with the examples. No
+additional live model calls were made for this verification. No human linguistic
+validation is claimed.
+
 ## October 31: code quality and repository cleanup
 
 Repository-wide Python lint and formatting checks pass with Ruff 0.17.3.

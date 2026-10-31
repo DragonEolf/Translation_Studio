@@ -1,0 +1,23 @@
+number,source,language,pages,status,timing_coverage,unmeasured_job_count,measured_attempt_count,first_measured_started_at,last_measured_finished_at,measured_processing_seconds,explicit_wait_seconds,measured_seconds_excluding_explicit_waits,translation_http_seconds,ocr_http_seconds,retry_wait_seconds,spacing_wait_seconds,pdf_local_seconds,rendering_seconds,http_429_count,translation_http_requests,ocr_http_requests,rendered_blocks,retained_source_blocks
+1,1 Introduction.pdf,Hindi,29,completed_with_issues,partial,1,1,2026-10-31T06:10:27.106880+00:00,2026-10-31T06:21:49.091893+00:00,681.978,573.544,108.434,87.69,0,0,573.544,18.061,17.56,0,96,0,401,5
+2,AI notes.pdf,Tamil,1,completed_with_issues,full,0,2,2026-10-31T05:48:22.204280+00:00,2026-10-31T08:34:03.744477+00:00,9.517,0.0,9.517,5.291,2.593,0,0.0,1.58,1.181,0,1,1,9,1
+3,blurry images.pdf,Telugu,2,completed_with_issues,full,0,2,2026-10-31T05:48:29.356455+00:00,2026-10-31T08:40:04.302668+00:00,17.165,3.005,14.161,5.293,6.17,3.002,0.002,2.621,1.856,2,4,2,10,0
+4,final basket 1jpeg copy.pdf,Bengali,25,completed_with_issues,partial,1,1,2026-10-31T07:02:07.430772+00:00,2026-10-31T07:42:01.946066+00:00,2394.533,2008.202,386.331,312.959,0,15.005,1993.197,66.047,64.115,0,337,0,418,14
+5,final challenge.pdf,Marathi,17,completed_with_issues,partial,1,1,2026-10-31T07:42:01.955586+00:00,2026-10-31T07:55:23.625772+00:00,801.667,635.12,166.547,137.82,0,0,635.12,25.904,25.462,0,107,0,319,7
+6,govt doc.pdf,Gujarati,1,completed_with_issues,none,2,0,,,,,,,,,,,,,,,31,8
+7,handwritten PDF.pdf,Kannada,9,completed_with_issues,full,0,2,2026-10-31T05:48:36.306086+00:00,2026-10-31T08:43:34.535322+00:00,221.544,85.055,136.489,99.423,9.494,85.029,0.027,26.742,24.218,21,66,3,106,7
+8,IIT Madras.pdf,Malayalam,2,completed_with_issues,partial,1,1,2026-10-31T06:21:49.098745+00:00,2026-10-31T06:23:19.975954+00:00,90.877,65.965,24.912,22.4,0,0,65.965,2.276,2.258,0,12,0,11,4
+9,Krishna Karthikeyan Cover Letter Crick Institute.pdf,Punjabi,2,completed_with_issues,partial,2,1,2026-10-31T07:55:23.632045+00:00,2026-10-31T07:58:22.685134+00:00,179.053,137.982,41.071,38.616,0,0,137.982,2.027,1.933,0,24,0,22,0
+10,Krishna_Resume_2026 copy.pdf,Odia,2,completed_with_issues,partial,2,1,2026-10-31T07:59:33.402488+00:00,2026-10-31T08:03:59.834387+00:00,266.431,174.776,91.655,73.829,0,0,174.776,17.079,16.728,0,30,0,84,0
+11,Long and Technical Report.pdf,Assamese,8,completed_with_issues,partial,2,1,2026-10-31T05:34:31.859094+00:00,2026-10-31T05:48:22.199573+00:00,830.33,689.433,140.897,114.298,0,0,689.433,24.324,23.518,0,116,0,194,0
+12,Marit Birthday Letter copy.pdf,Urdu,1,completed_with_issues,partial,1,1,2026-10-31T07:00:45.232322+00:00,2026-10-31T07:02:07.429563+00:00,82.197,71.984,10.213,8.56,0,0,71.984,1.405,1.196,0,13,0,8,0
+13,meesho.pdf,Kashmiri (Arabic),3,completed_with_issues,none,2,0,,,,,,,,,,,,,,,85,4
+14,pdf6 copy.pdf,Sindhi (Arabic),85,failed,partial,1,1,2026-10-31T06:23:19.977185+00:00,2026-10-31T07:00:45.206559+00:00,2245.214,1828.333,416.88,397.897,0,0,1828.333,9.73,8.194,0,306,0,0,1921
+15,Resume Archive.pdf,Nepali,1,completed_with_issues,none,2,0,,,,,,,,,,,,,,,91,0
+16,rotated pdf.pdf,Sanskrit,34,failed,partial,2,1,2026-10-31T08:32:10.048255+00:00,2026-10-31T08:33:57.219239+00:00,107.171,37.026,70.144,66.739,0,37.018,0.008,2.423,1.813,7,33,0,0,347
+17,Stockholm_signed_rental_agreement.pdf,Maithili,2,completed_with_issues,partial,1,1,2026-10-31T06:10:14.977801+00:00,2026-10-31T06:10:27.105849+00:00,12.128,5.997,6.131,5.196,0,0,5.997,0.881,0.861,0,2,0,6,2
+18,super dense .pdf,Bodo,2,completed_with_issues,partial,1,1,2026-10-31T05:48:47.619792+00:00,2026-10-31T06:10:14.968813+00:00,1287.339,916.81,370.529,166.537,0,0,916.81,200.302,188.486,0,154,0,505,2
+19,Urban Company.pdf,Dogri,2,completed_with_issues,partial,2,1,2026-10-31T07:58:22.686611+00:00,2026-10-31T07:59:33.401064+00:00,70.714,57.865,12.85,7.839,0,0,57.865,4.757,4.652,0,10,0,44,0
+20,Vehicle Pass copy.pdf,Konkani,1,completed_with_issues,partial,2,1,2026-10-31T08:03:59.836652+00:00,2026-10-31T08:04:47.491855+00:00,47.655,35.981,11.674,7.081,0,0,35.981,4.428,4.347,0,7,0,42,0
+21,weird angle book.pdf,Manipuri (Meitei),1,completed_with_issues,full,0,2,2026-10-31T05:48:25.205561+00:00,2026-10-31T08:39:54.084016+00:00,354.487,167.157,187.33,180.754,3.747,167.085,0.073,1.249,0.853,50,143,1,8,14
+22,White Paper copy.pdf,Santali,11,completed_with_issues,partial,2,2,2026-10-31T08:04:47.493451+00:00,2026-10-31T08:32:10.042613+00:00,1625.656,1111.903,513.753,484.495,0,581.299,530.603,23.364,21.976,130,472,0,172,5

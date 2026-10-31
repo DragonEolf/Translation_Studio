@@ -341,7 +341,12 @@ async function test(name, scenario, fn) {
 }
 (async () => {
   await fs.mkdir(output, { recursive: true });
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({
+    headless: true,
+    ...(process.env.CHROME_PATH
+      ? { executablePath: process.env.CHROME_PATH }
+      : {}),
+  });
   await test(
     "initial view, native names, responsive layout",
     {},

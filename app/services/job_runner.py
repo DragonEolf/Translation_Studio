@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.config import StudioError
 from app.models import Document, Job
 from app.services.cancellation import CancellationToken, JobCancelled
+from app.services.timing import JobTiming, current_timing
 
 
 class JobRunner:
@@ -53,6 +54,36 @@ class JobRunner:
                 continue
             token = CancellationToken()
             self.active[job_id] = token
+            storage = getattr(self.orchestrator, "storage", None)
+            timing = JobTiming(
+                job_id,
+                job.document_id,
+                job.operation,
+                job.created_at,
+                storage.root / "timing-events.jsonl" if storage else None,
+            )
+            context_token = current_timing.set(timing)
+            with self.sessions() as session:
+                current = session.get(Job, job_id)
+                previous = current.payload.get("timing", {})
+                attempts = previous.get("attempts", [])
+                # A process can end before its final timing checkpoint.
+                attempts = [
+                    {**a, "status": "interrupted"} if a["status"] == "running" else a
+                    for a in attempts
+                ]
+                current.payload = {
+                    **current.payload,
+                    "timing": {
+                        "version": 1,
+                        "had_unmeasured_progress": previous.get(
+                            "had_unmeasured_progress", bool(current.progress)
+                        ),
+                        "attempts": [*attempts, timing.snapshot()],
+                    },
+                }
+                session.commit()
+            timing_status = "interrupted"
             try:
                 status = await self.orchestrator.run(job_id, token)
                 token.check()
@@ -61,12 +92,14 @@ class JobRunner:
                     job.status, job.progress = status, 1
                     session.get(Document, job.document_id).status = status
                     session.commit()
+                timing_status = status
             except JobCancelled:
                 with self.sessions() as session:
                     job = session.get(Job, job_id)
                     job.status = "cancelled"
                     session.get(Document, job.document_id).status = "cancelled"
                     session.commit()
+                timing_status = "cancelled"
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -88,7 +121,25 @@ class JobRunner:
                         else "Processing failed; inspect server diagnostics"
                     )
                     session.get(Document, job.document_id).status = job.status
+                    timing_status = job.status
                     session.commit()
 
             finally:
+                result = timing.snapshot(timing_status)
+                timing.write({"event": "job_finished", **result})
+                with self.sessions() as session:
+                    current = session.get(Job, job_id)
+                    metadata = current.payload["timing"]
+                    current.payload = {
+                        **current.payload,
+                        "timing": {
+                            **metadata,
+                            "attempts": [
+                                result if a["attempt_id"] == timing.attempt_id else a
+                                for a in metadata["attempts"]
+                            ],
+                        },
+                    }
+                    session.commit()
+                current_timing.reset(context_token)
                 self.active.pop(job_id, None)
